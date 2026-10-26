@@ -18,9 +18,13 @@ npx skills add domesticmouse/skills --skill <skill-name>
 
 ## Available Skills
 
-| Skill | Description |
-| :--- | :--- |
-| _Coming soon_ | |
+### [`bjm-voice`](skills/bjm-voice/SKILL.md)
+
+Guides the agent in writing, editing, or reviewing blog posts, tutorials, articles, and social media updates in Brett Morgan's authentic writing voice.
+
+**Origin:** Distilled from analysis of Brett's existing articles, technical write-ups, and social posts to capture recurring linguistic signatures, Australian English spelling, and conversational cadence.
+
+**Intended Usage:** Activate whenever drafting, editing, refining, or critiquing a Medium post, LinkedIn update, technical write-up, or general prose that should sound like Brett rather than generic AI output.
 
 ## Repository Structure
 
