@@ -18,6 +18,14 @@ npx skills add domesticmouse/skills --skill <skill-name>
 
 ## Available Skills
 
+### [`agy-brain-explorer`](skills/agy-brain-explorer/SKILL.md)
+
+Discovers, lists, inspects, compares, audits, and safely deletes Google Antigravity session trajectories, transcripts, disk paths, tool invocations, and execution steps across all brain storage directories under `~/.gemini`.
+
+**Origin:** Built around a zero-setup [`uv`](https://docs.astral.sh/uv/) Python CLI script ([`agy-brain-explorer.py`](skills/agy-brain-explorer/scripts/agy-brain-explorer.py)) to make navigating local Antigravity `transcript.jsonl` and `transcript_full.jsonl` session logs fast and readable directly inside chat via GitHub Flavored Markdown tables and clickable `conversation://` and `file://` links.
+
+**Intended Usage:** Ask the agent to list recent sessions, group or search sessions by project or prompt keyword, inspect step timelines and tool calls, compare two sessions side-by-side, or clean up old sessions (moving them to the macOS Trash by default).
+
 ### [`bjm-voice`](skills/bjm-voice/SKILL.md)
 
 Guides the agent in writing, editing, or reviewing blog posts, tutorials, articles, and social media updates in Brett Morgan's authentic writing voice.
