@@ -24,7 +24,7 @@ Guides the agent in writing, editing, or reviewing blog posts, tutorials, articl
 
 **Origin:** Distilled from analysis of Brett's existing articles, technical write-ups, and social posts to capture recurring linguistic signatures, Australian English spelling, and conversational cadence.
 
-**Intended Usage:** Activate whenever drafting, editing, refining, or critiquing a Medium post, LinkedIn update, technical write-up, or general prose that should sound like Brett rather than generic AI output.
+**Intended Usage:** Explicitly invoke with `/bjm-voice` (or ask the agent to use `bjm-voice`) when drafting, editing, or reviewing a Medium post, LinkedIn update, or article that should sound like Brett. Configured as opt-in only so it won't bleed into everyday documentation, READMEs, or general writing tasks uninvited.
 
 ## Repository Structure
 

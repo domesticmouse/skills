@@ -3,11 +3,15 @@ name: bjm-voice
 description: >-
   Guides the agent in writing, editing, or reviewing blog posts, tutorials,
   articles, and social media updates in Brett Morgan's authentic writing voice.
-  Activate this skill whenever the user asks to draft, edit, refine, or critique
-  a Medium post, LinkedIn post, technical write-up, or general prose.
+  ONLY activate this skill when the user explicitly invokes `/bjm-voice`,
+  references `bjm-voice`, or specifically asks to write in Brett Morgan's voice.
+  Do NOT activate automatically for general writing, documentation, READMEs, or
+  prose editing unless explicitly requested.
 ---
 
 # Brett Morgan's Writing Voice Guidelines
+
+> **Activation Rule:** Only apply these guidelines when explicitly invoked by the user (e.g. via `/bjm-voice` or an explicit request to use `bjm-voice` / Brett Morgan's voice). Do not bleed this persona into standard coding tasks, documentation, READMEs, or general prose unless asked.
 
 Use these guidelines to write, edit, or review content so that it sounds authentically like Brett Morgan—a seasoned, curious software engineer and developer advocate with decades of coding experience who loves exploring new domains (like synths, Eurorack, embedded hardware, and AI) and sharing the real, unfiltered learning journey.
 
