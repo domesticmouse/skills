@@ -1,11 +1,11 @@
 ---
 name: agy-brain-explorer
 description: >-
-  Discover, list, inspect, compare, audit, and safely delete Google Antigravity session trajectories,
+  Discover, list, inspect, compare, audit, export, and safely delete Google Antigravity session trajectories,
   transcripts, disk paths, tool invocations, and execution steps across all brain storage
   directories under ~/.gemini. Use whenever asked to list recent/past sessions,
-  review session histories, compare sessions, inspect disk locations, debug trajectory steps,
-  or delete sessions and projects.
+  review session histories, export per-conversation Markdown logs (e.g. into a prompts/ folder),
+  compare sessions, inspect disk locations, debug trajectory steps, or delete sessions and projects.
 ---
 
 # Antigravity Brain Explorer Skill
@@ -199,4 +199,26 @@ uv run .agents/skills/agy-brain-explorer/scripts/agy-brain-explorer.py delete <S
 # Delete a session using single-session syntax
 uv run .agents/skills/agy-brain-explorer/scripts/agy-brain-explorer.py <SESSION> delete --force
 ```
+
+### 12. Export Per-Conversation Markdown Logs (`export` / `prompts`)
+
+Generate one detailed Markdown document per conversation (recording session metadata, user prompts, interactive `ask_question` Q&A selections, `thinking` summaries, Antigravity's file/tool actions, and executed shell commands) along with an index `README.md`:
+
+```bash
+# Export all sessions for the current workspace project into ./prompts/ (default)
+uv run .agents/skills/agy-brain-explorer/scripts/agy-brain-explorer.py export
+# Or using the 'prompts' alias:
+uv run .agents/skills/agy-brain-explorer/scripts/agy-brain-explorer.py prompts
+
+# Export all sessions for a specific project into a custom directory
+uv run .agents/skills/agy-brain-explorer/scripts/agy-brain-explorer.py export --project "NuttX" -o ./prompts
+
+# Export specific session(s) by ID or prefix into ./prompts/
+uv run .agents/skills/agy-brain-explorer/scripts/agy-brain-explorer.py export <SESSION_1> <SESSION_2> -o ./prompts
+
+# Render a single session's Markdown log to stdout or to a specific file
+uv run .agents/skills/agy-brain-explorer/scripts/agy-brain-explorer.py <SESSION> export
+uv run .agents/skills/agy-brain-explorer/scripts/agy-brain-explorer.py <SESSION> export -o ./prompts/session.md
+```
+
 

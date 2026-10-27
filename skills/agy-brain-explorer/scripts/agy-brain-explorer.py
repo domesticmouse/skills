@@ -48,15 +48,19 @@ def extract_workspace_from_tool_call(tc: dict[str, Any]) -> str | None:
             if not dp.startswith(home_gemini) and not dp.startswith("/tmp"):
                 return dp
 
-    # 3. AbsolutePath / TargetFile
-    for k in ("AbsolutePath", "TargetFile"):
+    # 3. AbsolutePath / TargetFile / Path
+    for k in ("AbsolutePath", "TargetFile", "Path"):
         val = clean_path_str(args.get(k))
         if val and val.startswith("/"):
-            home_gemini = str(Path.home() / ".gemini")
+            home = Path.home()
+            home_gemini = str(home / ".gemini")
             if not val.startswith(home_gemini) and not val.startswith("/tmp"):
                 p = Path(val)
                 for parent in p.parents:
-                    if (parent / ".git").is_dir() or (parent / ".agents").is_dir():
+                    if parent != home and (parent / ".agents").is_dir():
+                        return str(parent)
+                for parent in p.parents:
+                    if parent != home and (parent / ".git").is_dir():
                         return str(parent)
                 return str(p.parent)
 
@@ -211,9 +215,14 @@ class SessionData:
         files: list[str] = []
         for s in self.full_steps:
             for tc in s.get("tool_calls", []):
-                if tc.get("name") in ("write_to_file", "replace_file_content"):
+                if tc.get("name") in (
+                    "write_to_file",
+                    "replace_file_content",
+                    "write_file",
+                    "edit_file",
+                ):
                     args = tc.get("args", {})
-                    tgt = args.get("TargetFile")
+                    tgt = args.get("TargetFile") or args.get("Path")
                     if tgt and tgt not in files:
                         files.append(tgt)
         return files
@@ -312,7 +321,11 @@ def step_matches_query(step: dict[str, Any], query: str) -> tuple[bool, str]:
         name = tc.get("name", "")
         args = tc.get("args", {})
         cmd = args.get("CommandLine", "")
-        path = args.get("AbsolutePath", "") or args.get("TargetFile", "")
+        path = (
+            args.get("AbsolutePath", "")
+            or args.get("TargetFile", "")
+            or args.get("Path", "")
+        )
         action = args.get("toolAction", "")
         summary = args.get("toolSummary", "")
         args_dump = json.dumps(args, ensure_ascii=False)
@@ -1602,6 +1615,394 @@ def cmd_explorer_rm(
     )
 
 
+def format_md_code_cell(text: str) -> str:
+    """Wrap sanitized single-line text in a Markdown code span, handling embedded backticks safely."""
+    cell = sanitize_md_cell(text)
+    if not cell:
+        return "``"
+    max_ticks = max((len(m.group(0)) for m in re.finditer(r"`+", cell)), default=0)
+    fence = "`" * (max_ticks + 1)
+    pad = " " if (cell.startswith("`") or cell.endswith("`")) else ""
+    return f"{fence}{pad}{cell}{pad}{fence}"
+
+
+def slugify_prompt(text: str, max_words: int = 7) -> str:
+    """Create a URL/filename-safe slug from a user prompt."""
+    clean = re.sub(r"^/[a-zA-Z0-9_-]+\s*", "", text.strip())
+    words = re.findall(r"[a-zA-Z0-9]+", clean.lower())
+    if not words:
+        return "conversation"
+    slug = "-".join(words[:max_words])
+    return slug[:50].strip("-") or "conversation"
+
+
+def render_session_export_markdown(
+    data: SessionData, index_num: int | None = None
+) -> str:
+    """Render a comprehensive Markdown document recording prompts, thinking, actions, and commands for a session."""
+    lines: list[str] = []
+    start_time, end_time, duration_str = data.get_start_and_end_times()
+    meta = data.get_metadata_info()
+    user_req = data.get_user_request_clean()
+    tool_counts = data.get_tool_counts()
+    t_path = (
+        data.transcript_full_path
+        if data.transcript_full_path.exists()
+        else data.transcript_path
+    )
+
+    title_req = sanitize_md_cell(user_req)[:80]
+    if index_num is not None:
+        lines.append(f"# Conversation {index_num:02d}: {title_req}\n")
+    else:
+        lines.append(f"# Conversation `{data.session_id[:8]}`: {title_req}\n")
+
+    lines.append("## Session Metadata\n")
+    lines.append("| Property | Value |")
+    lines.append("| :--- | :--- |")
+    lines.append(
+        f"| **Session ID** | `{data.session_id}` [↗](conversation://{data.session_id}) |"
+    )
+    ws = meta.get("Workspace")
+    if ws:
+        lines.append(f"| **Project / Workspace** | [`{ws}`](file://{ws}) |")
+    elif "Project" in meta:
+        lines.append(f"| **Project** | `{meta['Project']}` |")
+    lines.append(
+        f"| **Started At** | `{format_datetime_display(start_time, str(start_time)) if start_time else 'unknown'}` |"
+    )
+    lines.append(
+        f"| **Ended At** | `{format_datetime_display(end_time, str(end_time)) if end_time else 'unknown'}` |"
+    )
+    lines.append(f"| **Duration** | `{duration_str}` |")
+    if "Model" in meta:
+        lines.append(f"| **Model** | {sanitize_md_cell(meta['Model'])} |")
+    lines.append(f"| **Total Steps** | {len(data.full_steps)} |")
+    if tool_counts:
+        tc_summary = ", ".join(
+            f"`{k}`: {v}"
+            for k, v in sorted(
+                tool_counts.items(), key=lambda item: item[1], reverse=True
+            )
+        )
+        lines.append(
+            f"| **Tool Calls** | {sum(tool_counts.values())} ({tc_summary}) |"
+        )
+    if t_path.exists():
+        lines.append(f"| **Transcript** | [`{t_path.name}`](file://{t_path}) |")
+    lines.append("\n---\n")
+
+    # 1. User Prompts & Interactive Q&A
+    lines.append("## 1. User Prompts & Interactive Q&A\n")
+    turn_idx = 0
+    prev_ask_questions: list[str] = []
+    for s in data.full_steps:
+        idx = s.get("step_index", 0)
+        tp = s.get("type", "")
+        content = s.get("content", "")
+        tcs = s.get("tool_calls", [])
+
+        if tp == "USER_INPUT":
+            m = re.search(
+                r"<USER_REQUEST>\s*(.*?)\s*</USER_REQUEST>", content, re.DOTALL
+            )
+            req = m.group(1).strip() if m else content.strip()
+            if req:
+                turn_idx += 1
+                lines.append(f"### Turn {turn_idx} (Step {idx})")
+                for q_line in req.splitlines():
+                    lines.append(f"> {q_line}")
+                lines.append("")
+            prev_ask_questions = []
+        elif tp == "PLANNER_RESPONSE":
+            prev_ask_questions = []
+            for tc in tcs:
+                if tc.get("name") == "ask_question":
+                    qs = [
+                        q.get("question", "")
+                        for q in tc.get("args", {}).get("questions", [])
+                        if isinstance(q, dict)
+                    ]
+                    if qs:
+                        prev_ask_questions = qs
+                        lines.append(f"- **Clarifying Question (Step {idx})**:")
+                        for q_text in qs:
+                            lines.append(f"  - *{sanitize_md_cell(q_text)}*")
+        elif tp == "GENERIC" and prev_ask_questions:
+            ans_lines = [
+                ln.strip()
+                for ln in content.splitlines()
+                if ln.strip()
+                and not ln.startswith("Created At:")
+                and not ln.startswith("Completed At:")
+            ]
+            if ans_lines:
+                lines.append(
+                    f"  - **User Selection (Step {idx})**: `{' '.join(ans_lines)}`\n"
+                )
+            prev_ask_questions = []
+
+    lines.append("---\n")
+
+    # 2. Summary of Thinking
+    lines.append("## 2. Summary of Thinking\n")
+    thinking_entries: list[tuple[int, str]] = []
+    for s in data.full_steps:
+        if s.get("type") == "PLANNER_RESPONSE":
+            th = (s.get("thinking") or "").strip()
+            if th:
+                idx = s.get("step_index", 0)
+                th_clean = " ".join(th.split())
+                thinking_entries.append((idx, th_clean))
+
+    if thinking_entries:
+        for idx, th_text in thinking_entries:
+            lines.append(f"- **Step {idx}**: {th_text}")
+        lines.append("")
+    else:
+        lines.append("*(No thinking blocks recorded in transcript.)*\n")
+
+    lines.append("---\n")
+
+    # 3. Antigravity's Actions & Deliverables
+    lines.append("## 3. Antigravity's Actions & Deliverables\n")
+    modified_files = data.get_modified_files()
+    read_files: list[str] = []
+    for s in data.full_steps:
+        for tc in s.get("tool_calls", []):
+            if tc.get("name") in ("read_file", "view_file"):
+                args = tc.get("args", {})
+                p = args.get("Path") or args.get("AbsolutePath")
+                if p and p not in read_files:
+                    read_files.append(p)
+
+    if modified_files:
+        lines.append("### Files Created or Modified")
+        for f in modified_files:
+            lines.append(f"- [`{Path(f).name}`](file://{f}) (`{f}`)")
+        lines.append("")
+
+    if read_files:
+        lines.append("### Files Read")
+        for f in read_files:
+            lines.append(f"- [`{Path(f).name}`](file://{f}) (`{f}`)")
+        lines.append("")
+
+    # Tool Invocations Table
+    all_tcs: list[tuple[int, str, str, str]] = []
+    for s in data.full_steps:
+        idx = s.get("step_index", 0)
+        for tc in s.get("tool_calls", []):
+            name = tc.get("name", "")
+            args = tc.get("args", {})
+            action = args.get("toolAction") or args.get("toolSummary") or ""
+            if "CommandLine" in args:
+                target = format_md_code_cell(str(args["CommandLine"]))
+            elif "Path" in args:
+                target = f"[`{Path(args['Path']).name}`](file://{args['Path']})"
+            elif "AbsolutePath" in args:
+                target = f"[`{Path(args['AbsolutePath']).name}`](file://{args['AbsolutePath']})"
+            elif "TargetFile" in args:
+                target = f"[`{Path(args['TargetFile']).name}`](file://{args['TargetFile']})"
+            elif "DirectoryPath" in args:
+                target = format_md_code_cell(str(args["DirectoryPath"]))
+            else:
+                target = sanitize_md_cell(
+                    json.dumps(
+                        {k: v for k, v in args.items() if not k.startswith("tool")}
+                    )[:80]
+                )
+            all_tcs.append((idx, name, action, target))
+
+    if all_tcs:
+        lines.append("### Tool Invocations")
+        lines.append("| Step | Tool | Action / Summary | Target |")
+        lines.append("| :---: | :--- | :--- | :--- |")
+        for idx, name, action, target in all_tcs:
+            lines.append(
+                f"| {idx} | `{name}` | {sanitize_md_cell(action)} | {target} |"
+            )
+        lines.append("")
+
+    lines.append("---\n")
+
+    # 4. Commands Executed
+    lines.append("## 4. Commands Executed\n")
+    cmds: list[tuple[int, str, str]] = []
+    for s in data.full_steps:
+        idx = s.get("step_index", 0)
+        for tc in s.get("tool_calls", []):
+            if tc.get("name") == "run_command":
+                args = tc.get("args", {})
+                summary = args.get("toolSummary") or args.get("toolAction") or ""
+                cmd_str = args.get("CommandLine", "")
+                cmds.append((idx, summary, cmd_str))
+
+    if cmds:
+        lines.append("| Step | Summary | Command Executed |")
+        lines.append("| :---: | :--- | :--- |")
+        for idx, summary, cmd_str in cmds:
+            lines.append(
+                f"| {idx} | {sanitize_md_cell(summary)} | {format_md_code_cell(cmd_str)} |"
+            )
+        lines.append("")
+    else:
+        lines.append("*(No shell commands executed in this session.)*\n")
+
+    return "\n".join(lines)
+
+
+def export_sessions_to_dir(
+    sessions: list[tuple[Path, TraceSummary | None]],
+    out_dir: Path,
+    project_label: str | None = None,
+) -> None:
+    """Export one Markdown document per session plus a README.md index into out_dir."""
+    if not sessions:
+        print("*No matching sessions found to export.*")
+        return
+
+    out_dir = out_dir.resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Sort chronologically (oldest first) for 01..NN numbering
+    def session_sort_key(item: tuple[Path, TraceSummary | None]) -> float:
+        s_path, tr = item
+        if tr and tr.created_dt:
+            return tr.created_dt.timestamp()
+        with contextlib.suppress(Exception):
+            data = SessionData.load(s_path)
+            st, _, _ = data.get_start_and_end_times()
+            if st:
+                return st.timestamp()
+        return 0.0
+
+    sorted_sessions = sorted(sessions, key=session_sort_key)
+    index_rows: list[str] = []
+
+    print(
+        f"### Exported Conversation Logs ({len(sorted_sessions)} sessions -> [`{out_dir}`](file://{out_dir}))\n"
+    )
+    print("| # | Created | Session ID | Steps | Exported Markdown File | Initial Prompt |")
+    print("| :---: | :--- | :--- | :---: | :--- | :--- |")
+
+    for idx, (s_path, tr) in enumerate(sorted_sessions, 1):
+        data = SessionData.load(s_path)
+        start_time, _, _ = data.get_start_and_end_times()
+        created_str = (
+            format_datetime_display(start_time, str(start_time))
+            if start_time
+            else (
+                format_datetime_display(tr.created_dt, tr.created_at)
+                if tr
+                else "unknown"
+            )
+        )
+        user_req = data.get_user_request_clean()
+        slug = slugify_prompt(user_req)
+        short_id = data.session_id[:8]
+        filename = f"{idx:02d}-{short_id}-{slug}.md"
+        file_path = out_dir / filename
+
+        md_content = render_session_export_markdown(data, index_num=idx)
+        file_path.write_text(md_content, encoding="utf-8")
+
+        s_link = f"`{short_id}` [↗](conversation://{data.session_id})"
+        f_link = f"[`{filename}`](file://{file_path})"
+        req_cell = sanitize_md_cell(user_req[:90])
+        steps_cnt = len(data.full_steps)
+
+        print(f"| {idx:02d} | `{created_str}` | {s_link} | {steps_cnt} | {f_link} | {req_cell} |")
+        index_rows.append(
+            f"| {idx:02d} | `{created_str}` | {s_link} | {steps_cnt} | [{filename}](file://{file_path}) | {req_cell} |"
+        )
+
+    readme_path = out_dir / "README.md"
+    proj_heading = f" (`{project_label}`)" if project_label else ""
+    readme_lines = [
+        f"# Project Conversation Logs{proj_heading}\n",
+        "This directory contains per-conversation Markdown logs recording user prompts, interactive Q&A selections, thinking summaries, Antigravity actions/deliverables, and executed commands.\n",
+        "| # | Created (Local) | Session ID | Steps | Document | Initial Prompt |",
+        "| :---: | :--- | :--- | :---: | :--- | :--- |",
+        *index_rows,
+        "",
+    ]
+    readme_path.write_text("\n".join(readme_lines), encoding="utf-8")
+    print(f"\n- **Index**: [`{readme_path.name}`](file://{readme_path})")
+
+
+@explorer_app.command(name="export")
+def cmd_explorer_export(
+    targets: Annotated[
+        list[str] | None,
+        typer.Argument(
+            metavar="TARGETS...",
+            help="Optional session IDs, prefixes, paths, or project names to export (defaults to current workspace project).",
+        ),
+    ] = None,
+    project: Annotated[
+        str | None,
+        typer.Option(
+            "--project",
+            "-p",
+            help="Export all sessions for this project name or workspace path.",
+        ),
+    ] = None,
+    brain: Annotated[
+        str | None,
+        typer.Option(
+            "--brain",
+            "-b",
+            help="Filter sessions by brain root directory name.",
+        ),
+    ] = None,
+    out_dir: Annotated[
+        Path,
+        typer.Option(
+            "--out-dir",
+            "--out",
+            "-o",
+            help="Output directory for exported Markdown files (default: ./prompts).",
+        ),
+    ] = Path("prompts"),
+) -> None:
+    """Export one Markdown document per conversation (prompts, thinking, actions, commands) into a directory (default: ./prompts)."""
+    effective_project = project
+    if not targets and not effective_project:
+        effective_project = Path.cwd().name
+
+    sessions, not_found = resolve_sessions_for_deletion(
+        targets=targets,
+        project_filter=effective_project,
+        brain_filter=brain,
+    )
+    if not_found:
+        nf_str = ", ".join(f"`{nf}`" for nf in not_found)
+        print(f"> [!WARNING]\n> Could not find session or project for: {nf_str}\n")
+
+    export_sessions_to_dir(
+        sessions=sessions,
+        out_dir=out_dir,
+        project_label=effective_project,
+    )
+
+
+@explorer_app.command(name="prompts", hidden=True)
+def cmd_explorer_prompts(
+    targets: Annotated[list[str] | None, typer.Argument(metavar="TARGETS...")] = None,
+    project: Annotated[str | None, typer.Option("--project", "-p")] = None,
+    brain: Annotated[str | None, typer.Option("--brain", "-b")] = None,
+    out_dir: Annotated[Path, typer.Option("--out-dir", "--out", "-o")] = Path("prompts"),
+) -> None:
+    """Alias for export."""
+    cmd_explorer_export(
+        targets=targets,
+        project=project,
+        brain=brain,
+        out_dir=out_dir,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Single Session Inspection CLI
 # ---------------------------------------------------------------------------
@@ -1967,8 +2368,11 @@ def show_steps(
                 args = tc.get("args", {})
                 action = (
                     args.get("toolAction")
+                    or args.get("toolSummary")
                     or args.get("CommandLine")
                     or args.get("AbsolutePath")
+                    or args.get("TargetFile")
+                    or args.get("Path")
                     or ""
                 )
                 if action:
@@ -2030,6 +2434,8 @@ def show_tools(data: SessionData) -> None:
                 target = f"`{args['DirectoryPath']}`"
             elif "TargetFile" in args:
                 target = f"`{args['TargetFile']}`"
+            elif "Path" in args:
+                target = f"`{args['Path']}`"
             else:
                 target = json.dumps(
                     {k: v for k, v in args.items() if not k.startswith("tool")}
@@ -2527,6 +2933,46 @@ def cmd_session_rm(
     cmd_session_delete(ctx, force=force, permanent=permanent, dry_run=dry_run)
 
 
+@session_app.command(name="export")
+def cmd_session_export(
+    ctx: typer.Context,
+    out: Annotated[
+        Path | None,
+        typer.Option(
+            "--out",
+            "--out-dir",
+            "-o",
+            help="Optional output Markdown file path or directory (prints to stdout if omitted).",
+        ),
+    ] = None,
+) -> None:
+    """Export a comprehensive Markdown document for this session (prompts, thinking, actions, commands)."""
+    data: SessionData = ctx.obj
+    md_content = render_session_export_markdown(data)
+    if out is None:
+        print(md_content)
+        return
+    out_resolved = out.expanduser().resolve()
+    if out_resolved.is_dir() or not out.suffix:
+        out_resolved.mkdir(parents=True, exist_ok=True)
+        slug = slugify_prompt(data.get_user_request_clean())
+        out_file = out_resolved / f"{data.session_id[:8]}-{slug}.md"
+    else:
+        out_resolved.parent.mkdir(parents=True, exist_ok=True)
+        out_file = out_resolved
+    out_file.write_text(md_content, encoding="utf-8")
+    print(f"Exported session `{data.session_id[:8]}` to [`{out_file.name}`](file://{out_file})")
+
+
+@session_app.command(name="prompts", hidden=True)
+def cmd_session_prompts(
+    ctx: typer.Context,
+    out: Annotated[Path | None, typer.Option("--out", "--out-dir", "-o")] = None,
+) -> None:
+    """Alias for export."""
+    cmd_session_export(ctx, out=out)
+
+
 # ---------------------------------------------------------------------------
 # CLI Routing Entrypoint
 # ---------------------------------------------------------------------------
@@ -2545,6 +2991,8 @@ def is_explorer_invocation(args: list[str]) -> bool:
         "delete",
         "rm",
         "remove",
+        "export",
+        "prompts",
     }
     val_flags = {
         "--limit",
@@ -2560,6 +3008,9 @@ def is_explorer_invocation(args: list[str]) -> bool:
         "-q",
         "--search",
         "-s",
+        "--out-dir",
+        "--out",
+        "-o",
     }
     non_opts: list[str] = []
     skip_next = False
@@ -2613,6 +3064,8 @@ def main() -> None:
             "delete",
             "rm",
             "remove",
+            "export",
+            "prompts",
         }
         has_subcommand = any(arg in session_subcommands for arg in args)
         final_args = list(args)
