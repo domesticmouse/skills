@@ -26,13 +26,29 @@ Discovers, lists, inspects, compares, audits, exports, and safely deletes Google
 
 **Intended Usage:** Ask the agent to list recent sessions, group or search sessions by project or prompt keyword, inspect step timelines and tool calls, export per-conversation Markdown logs (e.g., into a `prompts/` folder), compare two sessions side-by-side, or clean up old sessions (moving them to the macOS Trash by default).
 
+### [`asciinema`](skills/asciinema/SKILL.md)
+
+Records, replays, converts, sanitizes, trims, and embeds terminal sessions using the asciinema ecosystem.
+
+**Origin:** Built with reference guides ([`FORMAT.md`](skills/asciinema/FORMAT.md), [`EMBEDDING.md`](skills/asciinema/EMBEDDING.md), [`SELF-HOSTING.md`](skills/asciinema/SELF-HOSTING.md)) and zero-dependency Python helper scripts ([`sanitize-cast.py`](skills/asciinema/scripts/sanitize-cast.py) and [`trim-cast.py`](skills/asciinema/scripts/trim-cast.py)) to streamline preparing clean `.cast` recordings for documentation, slides, and web players.
+
+**Intended Usage:** Activated when recording terminal demos, converting `.cast` files to animated GIF (`agg`) or SVG (`svg-term`), stripping `stdin` keystrokes and redacting secrets, trimming trailing `Ctrl+D` exit sequences with a clean final-frame hold, or embedding `asciinema-player` in web apps.
+
 ### [`bjm-voice`](skills/bjm-voice/SKILL.md)
 
 Guides the agent in writing, editing, or reviewing blog posts, tutorials, articles, and social media updates in Brett Morgan's authentic writing voice.
 
 **Origin:** Distilled from analysis of Brett's existing articles, technical write-ups, and social posts to capture recurring linguistic signatures, Australian English spelling, and conversational cadence.
 
-**Intended Usage:** Explicitly invoke with `/bjm-voice` (or ask the agent to use `bjm-voice`) when drafting, editing, or reviewing a Medium post, LinkedIn update, or article that should sound like Brett. Configured as opt-in only so it won't bleed into everyday documentation, READMEs, or general writing tasks uninvited.
+**Intended Usage:** Activated when drafting, editing, or reviewing blog posts, tutorials, articles, or social media updates that should sound like Brett.
+
+### [`crop-image`](skills/crop-image/SKILL.md)
+
+Crops, trims, and adjusts image framing by removing transparent whitespace margins, trimming solid color borders, or extracting specific pixel bounding boxes.
+
+**Origin:** Built around a zero-dependency Python 3 utility ([`crop.py`](skills/crop-image/scripts/crop.py)) that decodes and re-encodes PNGs using only the Python standard library (with automatic fallback to Pillow for JPEG/WebP) to inspect subject bounding boxes and perform lossless crops.
+
+**Intended Usage:** Activated when inspecting image dimensions and subject margins, autocropping transparent or solid-color borders with configurable padding, or cropping images to exact pixel coordinates.
 
 ### [`nuttx-architecture`](skills/nuttx-architecture/SKILL.md)
 
