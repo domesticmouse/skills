@@ -58,6 +58,14 @@ Architectural guide and development workflows for the Apache NuttX RTOS (`nuttx`
 
 **Intended Usage:** Automatically activated when navigating, configuring, building, debugging, or adding device drivers, board support packages, kernel features, or NuttShell (`nsh`) applications in a NuttX workspace.
 
+### [`slidev-deck`](skills/slidev-deck/SKILL.md)
+
+Scaffolds, authors, styles, previews, and deploys dark-theme [Slidev](https://sli.dev/) presentation decks (`slides/`) with modular act files, custom Vue layouts, and embedded `asciinema-player` terminal recordings.
+
+**Origin:** Extracted from building technical presentation decks combining modular Slidev acts, high-contrast Tokyo Night / Dracula terminal themes, SSR-safe `AsciinemaPlayer.vue` wrappers with `BASE_URL` asset resolution, custom zoom-in and visual callout layouts, background dev-server management ([`slides-server.sh`](skills/slidev-deck/scripts/slides-server.sh)), and GitHub Pages CI deployment.
+
+**Intended Usage:** Activated when creating a new Slidev deck, authoring or refactoring slides and conversational presenter notes, embedding `.cast` terminal recordings or visual callouts, running the local Slidev dev server, or configuring GitHub Pages deployment.
+
 ### [`teach-code`](skills/teach-code/SKILL.md)
 
 An interactive, stateful code-teaching workflow that builds self-contained HTML lessons (compiled from Markdown via `build.py`), printable reference sheets, learning records, and runnable per-lesson companion projects in `apps/` verified with automated tests and linters.
@@ -76,7 +84,7 @@ skills/
     ├── SKILL.md        # Required: YAML frontmatter (name, description) + instructions
     ├── references/     # Optional: additional documentation loaded on demand
     ├── scripts/        # Optional: helper scripts and utilities
-    └── assets/         # Optional: templates and static resources
+    └── resources/      # Optional: templates, components, and static assets
 ```
 
 ## License
