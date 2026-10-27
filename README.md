@@ -4,7 +4,7 @@ A collection of AI agent skills by [@domesticmouse](https://github.com/domesticm
 
 ## Installation
 
-Install all skills or pick interactively:
+Install all default skills or pick interactively:
 
 ```bash
 npx skills add domesticmouse/skills
@@ -14,6 +14,12 @@ Install a specific skill:
 
 ```bash
 npx skills add domesticmouse/skills --skill <skill-name>
+```
+
+Install an optional skill pack (not installed by default):
+
+```bash
+npx skills add domesticmouse/skills/packs/<pack-name>
 ```
 
 ## Available Skills
@@ -74,17 +80,40 @@ An interactive, stateful code-teaching workflow that builds self-contained HTML 
 
 **Intended Usage:** Invoke with `/teach-code` (or ask the agent to teach a programming language, framework, or engineering tool) to establish a `MISSION.md`, curate `RESOURCES.md`, and progressively build interactive lessons backed by verified, runnable code.
 
+## Skill Packs
+
+Skill packs live under [`packs/`](packs/) so they are excluded from default `npx skills add domesticmouse/skills` installs, while remaining installable as a group via subpath.
+
+### [`packs/egui`](packs/egui) — Engine-First Rust & `egui` Application Pack
+
+A cohesive set of 5 skills for architecting, building, driving, and verifying multi-crate Rust + `egui`/`eframe`/`wgpu` applications across native desktop, headless CLI/MCP, and WebAssembly targets:
+
+```bash
+npx skills add domesticmouse/skills/packs/egui
+```
+
+- **[`egui-app-architecture`](packs/egui/egui-app-architecture/SKILL.md):** Strict acyclic `L0`–`L7` workspace crate layering (`xtask/src/layers.rs`), UI containment at `L6+`, panic-free/unsafe-free Clippy gates, and Cargo profile tuning for responsive dev builds and size-optimized Wasm bundles.
+- **[`egui-app-runner`](packs/egui/egui-app-runner/SKILL.md):** Running and debugging the native `eframe` desktop app, headless CLI, offscreen `egui` visual snapshots, authenticated loopback TCP control channel (`--control`), headless/bridged MCP servers, and Trunk Wasm builds.
+- **[`egui-command-engine`](packs/egui/egui-command-engine/SKILL.md):** Three-tier command taxonomy (Engine `CommandSpec`s, Shell/Tool UI commands, and CLI/JSON-RPC/MCP/TCP transports), declarative menu wiring, schema-driven `egui` dialogs, and adversarial input validation.
+- **[`egui-cow-document-model`](packs/egui/egui-cow-document-model/SKILL.md):** Pure serializable `L1` domain models, sparse `Arc` copy-on-write chunk/tile storage with fallible allocation, zero-copy snapshot undo/redo history with selection target restoration, and compile-time complete content-addressed persistence (`blake3` + Zstandard).
+- **[`egui-testing-infrastructure`](packs/egui/egui-testing-infrastructure/SKILL.md):** 7-tier verification architecture covering `cargo-mutants` mutation testing, `egui_kittest` headless UI harnesses, GPU test serialization (`gpu_lock`), pinned real-file corpus oracles, `panic_hunt` command fuzzing, performance budgets (`xtask perf`), and self-auditing scorecards (`xtask scorecard`).
+
 ## Repository Structure
 
-Each skill lives in its own directory under `skills/`:
+Default skills live under `skills/`, and optional skill groups live under `packs/<pack-name>/`:
 
 ```text
-skills/
-└── <skill-name>/
-    ├── SKILL.md        # Required: YAML frontmatter (name, description) + instructions
-    ├── references/     # Optional: additional documentation loaded on demand
-    ├── scripts/        # Optional: helper scripts and utilities
-    └── resources/      # Optional: templates, components, and static assets
+├── skills/
+│   └── <skill-name>/
+│       ├── SKILL.md        # Required: YAML frontmatter (name, description) + instructions
+│       ├── references/     # Optional: additional documentation loaded on demand
+│       ├── scripts/        # Optional: helper scripts and utilities
+│       └── resources/      # Optional: templates, components, and static assets
+└── packs/
+    └── <pack-name>/
+        └── <skill-name>/
+            ├── SKILL.md
+            └── references/
 ```
 
 ## License
