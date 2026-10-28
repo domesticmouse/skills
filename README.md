@@ -56,14 +56,6 @@ Crops, trims, and adjusts image framing by removing transparent whitespace margi
 
 **Intended Usage:** Activated when inspecting image dimensions and subject margins, autocropping transparent or solid-color borders with configurable padding, or cropping images to exact pixel coordinates.
 
-### [`nuttx-architecture`](skills/nuttx-architecture/SKILL.md)
-
-Architectural guide and development workflows for the Apache NuttX RTOS (`nuttx`) and user-space application suite (`apps`) repositories.
-
-**Origin:** Distilled from porting boards (including Renesas RA4M1 targets like the Seeed Studio XIAO RA4M1, Arduino UNO R4 Minima, and Arduino Nano R4), drivers, and user-space applications in Apache NuttX.
-
-**Intended Usage:** Automatically activated when navigating, configuring, building, debugging, or adding device drivers, board support packages, kernel features, or NuttShell (`nsh`) applications in a NuttX workspace.
-
 ### [`slidev-deck`](skills/slidev-deck/SKILL.md)
 
 Scaffolds, authors, styles, previews, and deploys dark-theme [Slidev](https://sli.dev/) presentation decks (`slides/`) with modular act files, custom Vue layouts, and embedded `asciinema-player` terminal recordings.
@@ -98,6 +90,20 @@ npx skills add domesticmouse/skills/packs/egui
 - **[`egui-cow-document-model`](packs/egui/egui-cow-document-model/SKILL.md):** Pure serializable `L1` domain models, sparse `Arc` copy-on-write chunk/tile storage with fallible allocation, zero-copy snapshot undo/redo history with selection target restoration, and compile-time complete content-addressed persistence (`blake3` + Zstandard).
 - **[`egui-testing-infrastructure`](packs/egui/egui-testing-infrastructure/SKILL.md):** 7-tier verification architecture covering `cargo-mutants` mutation testing, `egui_kittest` headless UI harnesses, GPU test serialization (`gpu_lock`), pinned real-file corpus oracles, `panic_hunt` command fuzzing, performance budgets (`xtask perf`), and self-auditing scorecards (`xtask scorecard`).
 
+### [`packs/hardware`](packs/hardware) — Embedded & Hardware Development Pack
+
+Skills for electronic circuit design, PCB/PCBA workflows, Eurorack front panels, embedded systems, RTOS development, and board bring-up:
+
+```bash
+npx skills add domesticmouse/skills/packs/hardware
+```
+
+> **Recommended Companion Skills:** Pair this pack with [`aklofas/kicad-happy`](https://github.com/aklofas/kicad-happy) (`npx skills add aklofas/kicad-happy`) for comprehensive KiCad schematic/PCB/Gerber analysis, footprint/symbol inspection, and fabrication verification.
+
+- **[`eurorack-panel`](packs/hardware/eurorack-panel/SKILL.md):** Design, inspect, and generate mated Doepfer A-100 3U Eurorack front panels in KiCad (`.kicad_pcb`) from a main circuit PCB ([`generate_eurorack_panel.py`](packs/hardware/eurorack-panel/scripts/generate_eurorack_panel.py)), including footprint-to-bushing mechanical offset compensation, M3 mounting slots, silkscreen callouts, grounded `F.Cu`/`B.Cu` copper shield planes, DRC checks, and Gerber/Excellon drill exports.
+- **[`nuttx-architecture`](packs/hardware/nuttx-architecture/SKILL.md):** Architectural guide and development workflows for the Apache NuttX RTOS (`nuttx`) and user-space application suite (`apps`) repositories, including board porting (Renesas RA4M1 targets), device drivers, kernel subsystems, and NuttShell (`nsh`) applications.
+- **[`skidl`](packs/hardware/skidl/SKILL.md):** Circuit design in Python with SKiDL for generating KiCad netlists (`.net`), PCBs, XML BOMs, hierarchical subcircuits, Electrical Rules Checking (`ERC`), and live-verified JLCPCB/LCSC PCBA BOM CSVs ([`jlcpcb_search.py`](packs/hardware/skidl/scripts/jlcpcb_search.py)).
+
 ## Repository Structure
 
 Default skills live under `skills/`, and optional skill groups live under `packs/<pack-name>/`:
@@ -113,7 +119,8 @@ Default skills live under `skills/`, and optional skill groups live under `packs
     └── <pack-name>/
         └── <skill-name>/
             ├── SKILL.md
-            └── references/
+            ├── references/
+            └── scripts/
 ```
 
 ## License
