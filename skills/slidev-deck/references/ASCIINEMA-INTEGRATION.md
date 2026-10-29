@@ -30,6 +30,8 @@ Slidev pre-renders slides in Node.js during `slidev build`. Importing `asciinema
    Slidev scales slides using CSS transforms. Attaching a `ResizeObserver` on the container element and calling `playerInstance.render()` ensures terminal geometry stays crisp across view transitions and presenter-console previews.
 4. **Automatic Playback Speed Pill**:
    Whenever `:speed` is set to a value other than `1` (e.g., `2.0`, `10.0`, `20.0`), the component displays a pill badge (`Playback speed: 10x`) beneath the terminal so the audience knows when a long build or codebase scan has been accelerated.
+5. **`asciicast v3` → `v2` Normalization & Chapter Marker Stepper Bar**:
+   `asciinema` CLI 3.x records in `asciicast v3` (`{"version": 3, "term": {...}}` with relative `dt` intervals and `"x"` exit holds), whereas `asciinema-player` `< 3.10.0` (including `^3.8.0` / `3.9.0`) only parses `asciicast v1/v2` and displays the explosion emoji (`💥`) on v3 headers. `AsciinemaPlayer.vue` fetches the `.cast` file, converts `v3` streams to `v2` in memory via `prepareCastForPlayer()`, passes `{ data: v2Text }` to `AsciinemaPlayer.create()`, auto-extracts embedded `"m"` chapter markers (computing idle-capped playback timestamps), defaults `pauseOnMarkers` to `true` when markers exist, and renders compact Variant A chapter stepper pills + conflict-free `[` / `]` / `p` stage shortcuts (`event.stopPropagation()`).
 
 ---
 

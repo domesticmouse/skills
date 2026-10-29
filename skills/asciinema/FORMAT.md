@@ -106,7 +106,7 @@ Records child process termination status:
 [0.051200, "x", 0]
 ```
 
-*Note on final frame holding*: In v3 recordings, preceding the `"x"` event with a 2–3s delay (e.g. `[3.0, "x", 0]`) holds the completed terminal screen so viewers can read final output before video players or animated GIFs loop.
+*Note on final frame holding*: In v3 recordings, preceding the `"x"` event with a 2–3s delay (e.g. `[3.0, "x", 0]`) holds the completed terminal screen so viewers can read final output before video players or animated GIFs loop. When converting to `asciicast v2` (which has no `"x"` event), replace the `"x"` event with a trailing no-op stdout event (`[total_time, "o", ""]`) to preserve the hold duration.
 
 ### 4. Inline Comments
 Lines starting with `#` are treated as comments and ignored by parsers:
@@ -114,3 +114,8 @@ Lines starting with `#` are treated as comments and ignored by parsers:
 # Step 1: Initialize repository
 [0.100000, "o", "git init\r\n"]
 ```
+
+### 5. Web Player Compatibility (`asciinema-player` `< 3.10` vs `>= 3.10`)
+- `asciinema` CLI 3.x records in `asciicast v3` (`"version": 3`) by default.
+- **`asciinema-player` versions `< 3.10.0` (including `3.8.x` and `3.9.x`) only parse `asciicast v1` and `v2`** and fail with the explosion emoji (`💥`) if fed a `{"version": 3}` header.
+- Convert v3 recordings to v2 (`trim-cast.py --to-v2`, `asciinema convert -f asciicast-v2`, or an in-memory JS normalizer passed via `{ data: v2Text }`) whenever targeting `asciinema-player` `< 3.10.0`.

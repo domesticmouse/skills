@@ -221,4 +221,13 @@ uv run .agents/skills/agy-brain-explorer/scripts/agy-brain-explorer.py <SESSION>
 uv run .agents/skills/agy-brain-explorer/scripts/agy-brain-explorer.py <SESSION> export -o ./prompts/session.md
 ```
 
+#### Multi-Take Recording Audit & Cleanup
+When an operator takes multiple attempts to record an `asciinema` `.cast` session in the same project workspace, `~/.gemini/**/brain/` accumulates every aborted or superseded session under that project (including sessions started from subdirectories like `<project>/lib`). Exporting by `--project` will include all takes (`01-...`, `02-...`, etc.). To isolate the canonical session(s):
+1. **Correlate Timestamps**: Read the `.cast` header `"timestamp"` (Unix epoch start time) and raw duration (`trim-cast.py <file> --info`), then compare against the `Created (Local)` and `Duration` fields in the exported `README.md` (or `agy-brain-explorer.py --project <proj>`).
+2. **Trash Superseded Takes**: Move earlier aborted or superseded sessions to macOS Trash by short ID:
+   ```bash
+   uv run .agents/skills/agy-brain-explorer/scripts/agy-brain-explorer.py delete <OLD_ID_1> <OLD_ID_2> --force
+   ```
+3. **Clean & Re-Export**: Wipe the target export folder (`rm -rf <out_dir> && mkdir -p <out_dir>`) before re-running `export --project <proj> -o <out_dir>` so stale `02-...`/`03-...` files do not linger and the canonical trace is numbered cleanly starting at `01-`.
+
 

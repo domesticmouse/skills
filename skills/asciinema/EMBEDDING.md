@@ -65,6 +65,15 @@ The official web player (`asciinema-player` v3) is implemented in TypeScript and
 </html>
 ```
 
+#### Troubleshooting the Explosion Emoji (`💥`) in Browser Playback
+`asciinema-player` renders a `💥` icon when loading or parsing the `.cast` stream fails. Two common causes and fixes:
+1. **`asciicast v3` fed to `asciinema-player < 3.10.0`**:
+   - `asciinema` CLI 3.x records `{"version": 3, "term": {"cols": ..., "rows": ...}}` with relative `dt` intervals, whereas `asciinema-player` `3.8.x` / `3.9.x` only parses `version: 1` or `2`.
+   - **Fix**: Either convert the file via `trim-cast.py --to-v2` or normalize `v3 -> v2` in JavaScript before passing `{ data: v2Text }` to `AsciinemaPlayer.create({ data: v2Text }, container, options)`.
+2. **Opening a standalone HTML test page over `file://`**:
+   - On `file://` origins, browser CORS blocks `fetch('/path/to/demo.cast')` and also rejects `fetch(URL.createObjectURL(blob))` (`blob:null/...`).
+   - **Fix**: Embed the `.cast` payload inline (e.g., base64+gzip decompressed at runtime via `new DecompressionStream('gzip')`) and pass `{ data: v2Text }` as the first argument to `AsciinemaPlayer.create({ data: v2Text }, container, options)` so `fetch()` is bypassed entirely.
+
 ---
 
 ### 2. React / Next.js / Docusaurus (SSR-Safe)

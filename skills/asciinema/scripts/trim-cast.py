@@ -71,6 +71,11 @@ def parse_args():
         default=None,
         help="Explicit 0-based event index to cut at (cuts this event and all following)",
     )
+    parser.add_argument(
+        "--to-v2",
+        action="store_true",
+        help="Convert asciicast v3 header and relative dt events to asciicast v2 (for asciinema-player <3.10 web compatibility)",
+    )
     return parser.parse_args()
 
 
@@ -230,6 +235,44 @@ def write_cast(file_path, header_line, events):
             f.write(ev.raw_line if ev.raw_line.endswith("\n") else ev.raw_line + "\n")
 
 
+def convert_events_to_v2(header, events):
+    """Convert asciicast v3 header and relative-dt events to asciicast v2."""
+    term = header.get("term", {}) if isinstance(header.get("term"), dict) else {}
+    v2_header = {
+        "version": 2,
+        "width": term.get("cols") or header.get("width") or 80,
+        "height": term.get("rows") or header.get("height") or 24,
+    }
+    for key in ("timestamp", "idle_time_limit", "command", "title", "env"):
+        if key in header:
+            v2_header[key] = header[key]
+    if "theme" in term:
+        v2_header["theme"] = term["theme"]
+    elif "theme" in header:
+        v2_header["theme"] = header["theme"]
+
+    v2_events = []
+    abs_time = 0.0
+    version = header.get("version", 2)
+    for ev in events:
+        if not ev.is_event:
+            continue
+        t_val = float(ev.parsed[0])
+        code = ev.parsed[1]
+        data = ev.parsed[2] if len(ev.parsed) > 2 else ""
+        abs_time = (abs_time + t_val) if version == 3 else t_val
+        ts = round(abs_time, 6)
+        if code == "x":
+            # In v2, hold the final frame with a no-op stdout event
+            new_parsed = [ts, "o", ""]
+        else:
+            new_parsed = [ts, code, data]
+        v2_events.append(CastEvent(new_parsed, json.dumps(new_parsed, ensure_ascii=False) + "\n"))
+
+    v2_header["duration"] = round(abs_time, 3)
+    return v2_header, json.dumps(v2_header, ensure_ascii=False) + "\n", v2_events
+
+
 def main():
     args = parse_args()
     header, header_raw, events = load_cast(args.input)
@@ -257,34 +300,40 @@ def main():
 
     # Trim operation
     cut_idx = find_cut_index(events, args.cut_at, args.cut_regex, args.cut_index)
-    if cut_idx is None:
+    if cut_idx is None and not args.to_v2:
         sys.stderr.write("No matching exit sequence found to trim. No changes made.\n")
         sys.exit(1)
 
-    kept_events = list(events[:cut_idx])
+    kept_events = list(events[:cut_idx]) if cut_idx is not None else list(events)
     version = orig_stats["version"]
 
-    # Append clean exit event
-    if version == 3:
-        exit_ev = [round(args.hold, 3), "x", "0"]
-        exit_line = json.dumps(exit_ev) + "\n"
-        kept_events.append(CastEvent(exit_ev, exit_line))
-        header_line = header_raw
-    else:
-        last_time = 0.0
-        for ev in reversed(kept_events):
-            if ev.is_event and len(ev.parsed) >= 1:
-                last_time = float(ev.parsed[0])
-                break
-        total_time = round(last_time + args.hold, 3)
-        exit_ev = [total_time, "x", "0"]
-        exit_line = json.dumps(exit_ev) + "\n"
-        kept_events.append(CastEvent(exit_ev, exit_line))
-        if "duration" in header:
-            header["duration"] = total_time
-            header_line = json.dumps(header, ensure_ascii=False) + "\n"
-        else:
+    # Append clean exit / final-frame hold event if we trimmed (or if no trailing hold exists)
+    if cut_idx is not None:
+        if version == 3:
+            exit_ev = [round(args.hold, 3), "x", "0"]
+            exit_line = json.dumps(exit_ev) + "\n"
+            kept_events.append(CastEvent(exit_ev, exit_line))
             header_line = header_raw
+        else:
+            last_time = 0.0
+            for ev in reversed(kept_events):
+                if ev.is_event and len(ev.parsed) >= 1:
+                    last_time = float(ev.parsed[0])
+                    break
+            total_time = round(last_time + args.hold, 3)
+            exit_ev = [total_time, "o", ""]
+            exit_line = json.dumps(exit_ev) + "\n"
+            kept_events.append(CastEvent(exit_ev, exit_line))
+            if "duration" in header:
+                header["duration"] = total_time
+                header_line = json.dumps(header, ensure_ascii=False) + "\n"
+            else:
+                header_line = header_raw
+    else:
+        header_line = header_raw
+
+    if args.to_v2 and version == 3:
+        header, header_line, kept_events = convert_events_to_v2(header, kept_events)
 
     out_path = args.input if args.in_place else args.output
     write_cast(out_path, header_line, kept_events)

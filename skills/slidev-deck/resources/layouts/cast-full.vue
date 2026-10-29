@@ -18,11 +18,15 @@ import AsciinemaPlayer from '../components/AsciinemaPlayer.vue'
       <AsciinemaPlayer
         v-if="$frontmatter.cast || $frontmatter.castSrc"
         :src="$frontmatter.cast || $frontmatter.castSrc"
+        :title="$frontmatter.title"
         :autoPlay="$frontmatter.autoPlay ?? false"
         :speed="$frontmatter.speed ?? 2.0"
-        :idleTimeLimit="$frontmatter.idleTimeLimit ?? 1.0"
+        :maxSegmentDuration="$frontmatter.maxSegmentDuration ?? 30.0"
+        :idleTimeLimit="$frontmatter.idleTimeLimit ?? 2.0"
         :fit="$frontmatter.fit ?? 'both'"
         :theme="$frontmatter.theme ?? 'dracula'"
+        :markers="$frontmatter.markers ?? []"
+        :pauseOnMarkers="$frontmatter.pauseOnMarkers ?? true"
         class="w-full h-full"
       />
       <div v-else class="w-full h-full flex flex-col justify-center">

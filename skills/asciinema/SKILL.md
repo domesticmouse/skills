@@ -63,8 +63,11 @@ asciinema play session.cast
 # Accelerated playback (2x speed) with 1s max pause
 asciinema play -s 2.0 -i 1.0 session.cast
 
-# Pause automatically on markers (slide mode)
+# Pause automatically on markers (slide mode; required to observe "m" stop points in CLI playback)
 asciinema play -m session.cast
+
+# Accelerated marker-pause playback (2x speed, 1s idle cap)
+asciinema play -m -s 2.0 -i 1.0 session.cast
 
 # Loop continuously
 asciinema play -l session.cast
@@ -168,8 +171,12 @@ python3 .agents/skills/asciinema/scripts/trim-cast.py session.cast trimmed.cast 
 
 # Trim at an explicit pattern or regex
 python3 .agents/skills/asciinema/scripts/trim-cast.py session.cast --in-place --cut-at "press ctrl+d"
+
+# Trim and convert asciicast v3 -> v2 for asciinema-player <3.10 web compatibility
+python3 .agents/skills/asciinema/scripts/trim-cast.py session.cast --in-place --to-v2
 ```
 
+- **Post-Recording Chapter Marker (`"m"`) Placement Rule**: When injecting `"m"` stop-point events into a `.cast` file after recording (because `Ctrl+x` was omitted live), insert `[0.0, "m", "<label>"]` (v3) or `[abs_time, "m", "<label>"]` (v2) **immediately after** the `"o"` stdout event that finishes drawing the target prompt/question frame (right before the user's thinking/typing pause `dt`). Inserting *before* the prompt renders leaves the screen blank or half-drawn when `asciinema play -m` or `pauseOnMarkers: true` pauses at the marker.
 - **Checkable Completion Criterion**: Run `python3 .agents/skills/asciinema/scripts/trim-cast.py <file> --info`. Confirm that no trailing exit sequence is detected and duration matches the expected trimmed time.
 
 ---
