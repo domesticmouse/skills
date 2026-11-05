@@ -20,6 +20,7 @@ import zlib
 
 try:
     from PIL import Image
+
     HAS_PIL = True
 except ImportError:
     HAS_PIL = False
@@ -50,17 +51,23 @@ def decode_png(file_path):
         pos += length + 4  # skip data + 4-byte CRC
 
         if chunk_type == b"IHDR":
-            width, height, bit_depth, color_type, comp, filter_method, interlace = struct.unpack(
-                ">IIBBBBB", chunk_data
+            width, height, bit_depth, color_type, _comp, _filter_method, interlace = (
+                struct.unpack(">IIBBBBB", chunk_data)
             )
             if bit_depth != 8:
-                raise ValueError(f"Unsupported PNG bit depth: {bit_depth} (expected 8).")
+                raise ValueError(
+                    f"Unsupported PNG bit depth: {bit_depth} (expected 8)."
+                )
             if color_type not in (2, 6):
                 raise ValueError(
-                    f"Unsupported PNG color type: {color_type} (expected 2 for RGB or 6 for RGBA)."
+                    f"Unsupported PNG color type: {color_type} "
+                    "(expected 2 for RGB or 6 for RGBA)."
                 )
             if interlace != 0:
-                raise ValueError("Interlaced PNG is not supported by built-in decoder; install Pillow.")
+                raise ValueError(
+                    "Interlaced PNG is not supported by built-in decoder; "
+                    "install Pillow."
+                )
         elif chunk_type == b"IDAT":
             idat.extend(chunk_data)
         elif chunk_type == b"IEND":
@@ -71,7 +78,9 @@ def decode_png(file_path):
     stride = 1 + width * channels
     expected_len = height * stride
     if len(raw) != expected_len:
-        raise ValueError(f"Decompressed data size mismatch: {len(raw)} != {expected_len}")
+        raise ValueError(
+            f"Decompressed data size mismatch: {len(raw)} != {expected_len}"
+        )
 
     rows = []
     prev_row = bytearray(width * channels)
@@ -121,6 +130,7 @@ def decode_png(file_path):
 
 def encode_png(width, height, channels, rows):
     """Encodes raw rows into a PNG bytearray using standard library zlib and struct."""
+
     def make_chunk(chunk_type, data):
         length = struct.pack(">I", len(data))
         crc = struct.pack(">I", binascii.crc32(chunk_type + data) & 0xFFFFFFFF)
@@ -142,7 +152,9 @@ def encode_png(width, height, channels, rows):
     return bytes(out)
 
 
-def find_bounding_box(width, height, channels, rows, alpha_thresh=1, color_match=None, tolerance=0):
+def find_bounding_box(
+    width, height, channels, rows, alpha_thresh=1, color_match=None, tolerance=0
+):
     """
     Finds the bounding box [min_x, min_y, max_x, max_y] of subject pixels.
     If channels == 4: checks alpha >= alpha_thresh and not matching color_match.
@@ -174,14 +186,10 @@ def find_bounding_box(width, height, channels, rows, alpha_thresh=1, color_match
             a = row[offset + 3] if channels == 4 else 255
 
             if not is_background(r, g, b, a):
-                if x < min_x:
-                    min_x = x
-                if x > max_x:
-                    max_x = x
-                if y < min_y:
-                    min_y = y
-                if y > max_y:
-                    max_y = y
+                min_x = min(min_x, x)
+                max_x = max(max_x, x)
+                min_y = min(min_y, y)
+                max_y = max(max_y, y)
 
     if min_x > max_x or min_y > max_y:
         return None  # entire image is blank
@@ -193,7 +201,11 @@ def detect_border_color(width, height, channels, rows):
     """Samples image corner and edge pixels to guess the background color."""
     corners = [
         (rows[0][0], rows[0][1], rows[0][2]),
-        (rows[0][(width - 1) * channels], rows[0][(width - 1) * channels + 1], rows[0][(width - 1) * channels + 2]),
+        (
+            rows[0][(width - 1) * channels],
+            rows[0][(width - 1) * channels + 1],
+            rows[0][(width - 1) * channels + 2],
+        ),
         (rows[height - 1][0], rows[height - 1][1], rows[height - 1][2]),
         (
             rows[height - 1][(width - 1) * channels],
@@ -207,15 +219,26 @@ def detect_border_color(width, height, channels, rows):
     return corners[0]
 
 
-def crop_image_pure(input_path, output_path, crop_box=None, autocrop=False, padding=0,
-                    alpha_thresh=1, trim_color=None, tolerance=0):
+def crop_image_pure(
+    input_path,
+    output_path,
+    crop_box=None,
+    autocrop=False,
+    padding=0,
+    alpha_thresh=1,
+    trim_color=None,
+    tolerance=0,
+):
     width, height, channels, rows = decode_png(input_path)
 
     if crop_box is not None:
         left, top, right, bottom = crop_box
     elif autocrop:
         bbox = find_bounding_box(
-            width, height, channels, rows,
+            width,
+            height,
+            channels,
+            rows,
             alpha_thresh=alpha_thresh,
             color_match=trim_color,
             tolerance=tolerance,
@@ -231,7 +254,9 @@ def crop_image_pure(input_path, output_path, crop_box=None, autocrop=False, padd
         raise ValueError("Must specify either --autocrop or --box.")
 
     if left > right or top > bottom:
-        raise ValueError(f"Invalid crop box: left={left}, top={top}, right={right}, bottom={bottom}")
+        raise ValueError(
+            f"Invalid crop box: left={left}, top={top}, right={right}, bottom={bottom}"
+        )
 
     new_w = right - left + 1
     new_h = bottom - top + 1
@@ -248,14 +273,24 @@ def crop_image_pure(input_path, output_path, crop_box=None, autocrop=False, padd
     return width, height, new_w, new_h, (left, top, right, bottom)
 
 
-def crop_image_pil(input_path, output_path, crop_box=None, autocrop=False, padding=0,
-                   alpha_thresh=1, trim_color=None, tolerance=0):
+def crop_image_pil(
+    input_path,
+    output_path,
+    crop_box=None,
+    autocrop=False,
+    padding=0,
+    alpha_thresh=1,
+    trim_color=None,
+    tolerance=0,
+):
     with Image.open(input_path) as im:
         orig_w, orig_h = im.size
-        has_alpha = im.mode in ("RGBA", "LA") or (im.mode == "P" and "transparency" in im.info)
+        has_alpha = im.mode in ("RGBA", "LA") or (
+            im.mode == "P" and "transparency" in im.info
+        )
 
         if crop_box is not None:
-            # Pillow uses (left, upper, right, lower) where right and lower are exclusive
+            # Pillow uses (left, upper, right, lower) where right & lower are exclusive
             left, top, right, bottom = crop_box
             cropped = im.crop((left, top, right + 1, bottom + 1))
         elif autocrop:
@@ -269,6 +304,7 @@ def crop_image_pil(input_path, output_path, crop_box=None, autocrop=False, paddi
                 # convert to RGB and compare difference
                 rgb = im.convert("RGB")
                 from PIL import ImageChops
+
                 bg = Image.new("RGB", im.size, trim_color)
                 diff = ImageChops.difference(rgb, bg)
                 if tolerance > 0:
@@ -281,6 +317,7 @@ def crop_image_pil(input_path, output_path, crop_box=None, autocrop=False, paddi
                     bg_color = (bg_color, bg_color, bg_color)
                 bg = Image.new(im.mode, im.size, bg_color)
                 from PIL import ImageChops
+
                 diff = ImageChops.difference(im, bg)
                 bbox = diff.getbbox()
 
@@ -308,8 +345,12 @@ def inspect_image(input_path, alpha_thresh=1, tolerance=0):
     if is_png and not HAS_PIL:
         width, height, channels, rows = decode_png(input_path)
         border_col = detect_border_color(width, height, channels, rows)
-        alpha_bbox = find_bounding_box(width, height, channels, rows, alpha_thresh=alpha_thresh)
-        color_bbox = find_bounding_box(width, height, channels, rows, color_match=border_col, tolerance=tolerance)
+        alpha_bbox = find_bounding_box(
+            width, height, channels, rows, alpha_thresh=alpha_thresh
+        )
+        color_bbox = find_bounding_box(
+            width, height, channels, rows, color_match=border_col, tolerance=tolerance
+        )
         mode = "RGBA" if channels == 4 else "RGB"
         return {
             "width": width,
@@ -345,7 +386,8 @@ def inspect_image(input_path, alpha_thresh=1, tolerance=0):
             }
     else:
         raise ValueError(
-            f"Pillow is required to inspect non-PNG image: {input_path}. Install Pillow with: pip install pillow"
+            f"Pillow is required to inspect non-PNG image: {input_path}. "
+            "Install Pillow with: pip install pillow"
         )
 
 
@@ -354,15 +396,49 @@ def main():
         description="Lossless image cropping and whitespace trimming utility."
     )
     parser.add_argument("input", help="Path to input image")
-    parser.add_argument("-o", "--output", help="Path to output image (required unless --inspect or --in-place)")
-    parser.add_argument("--in-place", action="store_true", help="Overwrite input image directly")
-    parser.add_argument("--inspect", action="store_true", help="Inspect image dimensions, mode, and subject bounds")
-    parser.add_argument("--autocrop", action="store_true", help="Trim blank/transparent/solid borders automatically")
-    parser.add_argument("--box", help="Manual crop box as left,top,right,bottom (inclusive pixel coordinates)")
-    parser.add_argument("--padding", type=int, default=0, help="Padding in pixels to leave around subject (default: 0)")
-    parser.add_argument("--alpha-thresh", type=int, default=1, help="Alpha threshold (0-255) for transparency (default: 1)")
-    parser.add_argument("--color", help="Trim matching solid color as R,G,B (e.g. 255,255,255)")
-    parser.add_argument("--tolerance", type=int, default=5, help="Color match tolerance (0-255, default: 5)")
+    parser.add_argument(
+        "-o",
+        "--output",
+        help="Path to output image (required unless --inspect or --in-place)",
+    )
+    parser.add_argument(
+        "--in-place", action="store_true", help="Overwrite input image directly"
+    )
+    parser.add_argument(
+        "--inspect",
+        action="store_true",
+        help="Inspect image dimensions, mode, and subject bounds",
+    )
+    parser.add_argument(
+        "--autocrop",
+        action="store_true",
+        help="Trim blank/transparent/solid borders automatically",
+    )
+    parser.add_argument(
+        "--box",
+        help="Manual crop box as left,top,right,bottom (inclusive pixel coordinates)",
+    )
+    parser.add_argument(
+        "--padding",
+        type=int,
+        default=0,
+        help="Padding in pixels to leave around subject (default: 0)",
+    )
+    parser.add_argument(
+        "--alpha-thresh",
+        type=int,
+        default=1,
+        help="Alpha threshold (0-255) for transparency (default: 1)",
+    )
+    parser.add_argument(
+        "--color", help="Trim matching solid color as R,G,B (e.g. 255,255,255)"
+    )
+    parser.add_argument(
+        "--tolerance",
+        type=int,
+        default=5,
+        help="Color match tolerance (0-255, default: 5)",
+    )
 
     args = parser.parse_args()
 
@@ -371,7 +447,9 @@ def main():
         sys.exit(1)
 
     if args.inspect:
-        info = inspect_image(args.input, alpha_thresh=args.alpha_thresh, tolerance=args.tolerance)
+        info = inspect_image(
+            args.input, alpha_thresh=args.alpha_thresh, tolerance=args.tolerance
+        )
         print(f"File: {args.input}")
         print(f"Dimensions: {info['width']}x{info['height']} px")
         print(f"Color Mode: {info['mode']} (engine: {info['engine']})")
@@ -380,24 +458,41 @@ def main():
             ab = info["alpha_bbox"]
             w = ab[2] - ab[0] + 1
             h = ab[3] - ab[1] + 1
-            print(f"Alpha Subject Bounding Box: left={ab[0]}, top={ab[1]}, right={ab[2]}, bottom={ab[3]}")
-            print(f"Alpha Subject Size: {w}x{h} px (margin: {ab[0]} left, {info['width'] - 1 - ab[2]} right, {ab[1]} top, {info['height'] - 1 - ab[3]} bottom)")
+            print(
+                f"Alpha Subject Bounding Box: left={ab[0]}, top={ab[1]}, "
+                f"right={ab[2]}, bottom={ab[3]}"
+            )
+            r_margin = info["width"] - 1 - ab[2]
+            b_margin = info["height"] - 1 - ab[3]
+            print(
+                f"Alpha Subject Size: {w}x{h} px (margin: {ab[0]} left, "
+                f"{r_margin} right, {ab[1]} top, {b_margin} bottom)"
+            )
         if info.get("color_bbox"):
             cb = info["color_bbox"]
             w = cb[2] - cb[0] + 1
             h = cb[3] - cb[1] + 1
-            print(f"Color Subject Bounding Box: left={cb[0]}, top={cb[1]}, right={cb[2]}, bottom={cb[3]} ({w}x{h} px)")
+            print(
+                f"Color Subject Bounding Box: left={cb[0]}, top={cb[1]}, "
+                f"right={cb[2]}, bottom={cb[3]} ({w}x{h} px)"
+            )
         sys.exit(0)
 
     if not args.autocrop and not args.box:
-        sys.stderr.write("Error: Must specify --autocrop, --box <left,top,right,bottom>, or --inspect.\n")
+        sys.stderr.write(
+            "Error: Must specify --autocrop, --box <left,top,right,bottom>, "
+            "or --inspect.\n"
+        )
         sys.exit(1)
 
     output_path = args.output
     if args.in_place:
         output_path = args.input
     elif not output_path:
-        sys.stderr.write("Error: Output path not specified. Use -o <path> or --in-place to overwrite.\n")
+        sys.stderr.write(
+            "Error: Output path not specified. Use -o <path> or --in-place "
+            "to overwrite.\n"
+        )
         sys.exit(1)
 
     crop_box = None
@@ -407,8 +502,11 @@ def main():
             if len(parts) != 4:
                 raise ValueError()
             crop_box = tuple(parts)
-        except Exception:
-            sys.stderr.write("Error: --box must be 4 comma-separated integers: left,top,right,bottom\n")
+        except ValueError:
+            sys.stderr.write(
+                "Error: --box must be 4 comma-separated integers: "
+                "left,top,right,bottom\n"
+            )
             sys.exit(1)
 
     trim_color = None
@@ -418,8 +516,11 @@ def main():
             if len(parts) != 3:
                 raise ValueError()
             trim_color = tuple(parts)
-        except Exception:
-            sys.stderr.write("Error: --color must be 3 comma-separated integers: R,G,B (e.g. 255,255,255)\n")
+        except ValueError:
+            sys.stderr.write(
+                "Error: --color must be 3 comma-separated integers: "
+                "R,G,B (e.g. 255,255,255)\n"
+            )
             sys.exit(1)
 
     is_png = args.input.lower().endswith(".png")
@@ -449,9 +550,15 @@ def main():
                 tolerance=args.tolerance,
             )
 
-        print(f"Success: {args.input} ({orig_w}x{orig_h}) -> {output_path} ({new_w}x{new_h})")
-        print(f"Crop coordinates (inclusive): left={box[0]}, top={box[1]}, right={box[2]}, bottom={box[3]}")
-    except Exception as e:
+        print(
+            f"Success: {args.input} ({orig_w}x{orig_h}) -> "
+            f"{output_path} ({new_w}x{new_h})"
+        )
+        print(
+            f"Crop coordinates (inclusive): left={box[0]}, top={box[1]}, "
+            f"right={box[2]}, bottom={box[3]}"
+        )
+    except (OSError, ValueError, struct.error, zlib.error) as e:
         sys.stderr.write(f"Error during cropping: {e}\n")
         sys.exit(1)
 

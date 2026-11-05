@@ -1685,9 +1685,7 @@ def render_session_export_markdown(
                 tool_counts.items(), key=lambda item: item[1], reverse=True
             )
         )
-        lines.append(
-            f"| **Tool Calls** | {sum(tool_counts.values())} ({tc_summary}) |"
-        )
+        lines.append(f"| **Tool Calls** | {sum(tool_counts.values())} ({tc_summary}) |")
     if t_path.exists():
         lines.append(f"| **Transcript** | [`{t_path.name}`](file://{t_path}) |")
     lines.append("\n---\n")
@@ -1803,7 +1801,9 @@ def render_session_export_markdown(
             elif "AbsolutePath" in args:
                 target = f"[`{Path(args['AbsolutePath']).name}`](file://{args['AbsolutePath']})"
             elif "TargetFile" in args:
-                target = f"[`{Path(args['TargetFile']).name}`](file://{args['TargetFile']})"
+                target = (
+                    f"[`{Path(args['TargetFile']).name}`](file://{args['TargetFile']})"
+                )
             elif "DirectoryPath" in args:
                 target = format_md_code_cell(str(args["DirectoryPath"]))
             else:
@@ -1883,7 +1883,9 @@ def export_sessions_to_dir(
     print(
         f"### Exported Conversation Logs ({len(sorted_sessions)} sessions -> [`{out_dir}`](file://{out_dir}))\n"
     )
-    print("| # | Created | Session ID | Steps | Exported Markdown File | Initial Prompt |")
+    print(
+        "| # | Created | Session ID | Steps | Exported Markdown File | Initial Prompt |"
+    )
     print("| :---: | :--- | :--- | :---: | :--- | :--- |")
 
     for idx, (s_path, tr) in enumerate(sorted_sessions, 1):
@@ -1912,7 +1914,9 @@ def export_sessions_to_dir(
         req_cell = sanitize_md_cell(user_req[:90])
         steps_cnt = len(data.full_steps)
 
-        print(f"| {idx:02d} | `{created_str}` | {s_link} | {steps_cnt} | {f_link} | {req_cell} |")
+        print(
+            f"| {idx:02d} | `{created_str}` | {s_link} | {steps_cnt} | {f_link} | {req_cell} |"
+        )
         index_rows.append(
             f"| {idx:02d} | `{created_str}` | {s_link} | {steps_cnt} | [{filename}](file://{file_path}) | {req_cell} |"
         )
@@ -1992,7 +1996,9 @@ def cmd_explorer_prompts(
     targets: Annotated[list[str] | None, typer.Argument(metavar="TARGETS...")] = None,
     project: Annotated[str | None, typer.Option("--project", "-p")] = None,
     brain: Annotated[str | None, typer.Option("--brain", "-b")] = None,
-    out_dir: Annotated[Path, typer.Option("--out-dir", "--out", "-o")] = Path("prompts"),
+    out_dir: Annotated[Path, typer.Option("--out-dir", "--out", "-o")] = Path(
+        "prompts"
+    ),
 ) -> None:
     """Alias for export."""
     cmd_explorer_export(
@@ -2353,12 +2359,10 @@ def show_steps(
             break
 
         time_str = ""
-        try:
+        with contextlib.suppress(ValueError, TypeError):
             time_str = datetime.fromisoformat(s.get("created_at", "")).strftime(
                 "%H:%M:%S"
             )
-        except (ValueError, TypeError):
-            pass
 
         # Build preview string
         if tool_calls:
@@ -2961,7 +2965,9 @@ def cmd_session_export(
         out_resolved.parent.mkdir(parents=True, exist_ok=True)
         out_file = out_resolved
     out_file.write_text(md_content, encoding="utf-8")
-    print(f"Exported session `{data.session_id[:8]}` to [`{out_file.name}`](file://{out_file})")
+    print(
+        f"Exported session `{data.session_id[:8]}` to [`{out_file.name}`](file://{out_file})"
+    )
 
 
 @session_app.command(name="prompts", hidden=True)

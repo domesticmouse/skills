@@ -109,6 +109,10 @@ export interface AsciinemaPlayerProps {
    * Pause automatically on hitting chapter markers
    */
   pauseOnMarkers?: boolean
+  /**
+   * Show the development chapter stepper pills, transport bar, and segment HUD (default: false)
+   */
+  showChapterBar?: boolean
 }
 
 const props = withDefaults(defineProps<AsciinemaPlayerProps>(), {
@@ -131,6 +135,7 @@ const props = withDefaults(defineProps<AsciinemaPlayerProps>(), {
   poster: undefined,
   markers: () => [],
   pauseOnMarkers: true,
+  showChapterBar: false,
 })
 
 const containerRef = ref<HTMLDivElement | null>(null)
@@ -260,7 +265,7 @@ function prepareCastForPlayer(
       })
       currentEvents = []
       fromLabel = markerLabel
-    } else {
+    } else if (code !== 'x') {
       currentEvents.push({ dt, cappedDt, code, payload, rawAbs })
     }
   }
@@ -286,10 +291,8 @@ function prepareCastForPlayer(
     let segRawDur = 0.0
     let segCappedDur = 0.0
     seg.events.forEach((e) => {
-      if (e.code !== 'x') {
-        segRawDur += e.dt
-        segCappedDur += e.cappedDt
-      }
+      segRawDur += e.dt
+      segCappedDur += e.cappedDt
     })
 
     let segSpeed = minSpeed
@@ -299,17 +302,13 @@ function prepareCastForPlayer(
 
     const startTime = warpedAbs
     seg.events.forEach((e) => {
-      if (e.code === 'x') {
-        warpedAbs += e.cappedDt
-        bodyLines.push(JSON.stringify([Number(warpedAbs.toFixed(6)), 'o', '']))
-      } else {
-        warpedAbs += e.cappedDt / segSpeed
-        unwarpedCappedAbs += e.cappedDt
-        bodyLines.push(JSON.stringify([Number(warpedAbs.toFixed(6)), e.code, e.payload]))
-      }
+      warpedAbs += e.cappedDt / segSpeed
+      unwarpedCappedAbs += e.cappedDt
+      bodyLines.push(JSON.stringify([Number(warpedAbs.toFixed(6)), e.code, e.payload]))
     })
 
-    const endTime = warpedAbs
+    const endTime = Number(warpedAbs.toFixed(6))
+    warpedAbs = endTime
     const computedSeg: CastSegmentInfo = {
       index: segIdx,
       fromLabel: seg.fromLabel,
@@ -324,13 +323,13 @@ function prepareCastForPlayer(
     computedSegments.push(computedSeg)
 
     if (seg.isMarkerEnd && seg.markerLabel) {
-      const markerTime = Number(warpedAbs.toFixed(6))
+      const markerTime = endTime
       bodyLines.push(JSON.stringify([markerTime, 'm', seg.markerLabel]))
       foundChapters.push({
         index: foundChapters.length,
         rawTime: seg.rawEndTime,
         unwarpedPlayTime: unwarpedCappedAbs,
-        playTime: warpedAbs,
+        playTime: markerTime,
         label: seg.markerLabel,
         inSpeed: segSpeed,
         inDuration: computedSeg.warpedDuration,
@@ -351,7 +350,7 @@ function prepareCastForPlayer(
     version: 2,
     width: props.cols || (header.term && header.term.cols) || header.width || 120,
     height: props.rows || (header.term && header.term.rows) || header.height || 32,
-    duration: Number(warpedAbs.toFixed(3)),
+    duration: warpedAbs,
     timestamp: header.timestamp,
     env: header.env || { SHELL: '/bin/zsh' },
   }
@@ -373,16 +372,83 @@ function findSegmentIndexAtTime(playTimeSec: number): number {
   return segments.value.length - 1
 }
 
+let lastPolledTime = -1
+
+function findChapterAtTime(playTimeSec: number, toleranceSec = 0.05): number {
+  for (let i = 0; i < chapters.value.length; i++) {
+    if (Math.abs(playTimeSec - chapters.value[i].playTime) <= toleranceSec) {
+      return i
+    }
+  }
+  return -1
+}
+
+function applyEndState(reason: 'ended' | 'jumped' = 'jumped') {
+  const tailSegIdx = Math.max(0, segments.value.length - 1)
+  const tailSeg = segments.value[tailSegIdx]
+  const endTime = tailSeg ? tailSeg.endTime : 0
+  activeChapterIdx.value = chapters.value.length
+  hitChapterIdx.value = chapters.value.length
+  currentSegmentIdx.value = tailSegIdx
+  isPlaying.value = false
+  lastPolledTime = endTime
+  statusText.value =
+    reason === 'ended'
+      ? `⏹ End: ${tailSeg ? tailSeg.toLabel : 'Recording Complete'}`
+      : `⏸ End: ${tailSeg ? tailSeg.toLabel : 'Recording Complete'}`
+  statusMode.value = 'paused-marker'
+}
+
 async function syncLiveSpeedFromPlayer() {
   if (!playerInstance || typeof playerInstance.getCurrentTime !== 'function') return
   try {
     const t = await playerInstance.getCurrentTime()
-    if (typeof t === 'number' && !Number.isNaN(t)) {
+    if (typeof t !== 'number' || Number.isNaN(t)) return
+    const tailSeg = segments.value[segments.value.length - 1]
+    const timeChanged = Math.abs(t - lastPolledTime) >= 0.005
+
+    if (tailSeg && t >= tailSeg.endTime - 0.02) {
+      if (activeChapterIdx.value !== chapters.value.length || isPlaying.value) {
+        applyEndState(isPlaying.value ? 'ended' : 'jumped')
+      }
+      lastPolledTime = t
+      return
+    }
+
+    if (!isPlaying.value && !timeChanged) return
+    lastPolledTime = t
+
+    if (isPlaying.value) {
       const segIdx = findSegmentIndexAtTime(t)
       currentSegmentIdx.value = segIdx
-      if (isPlaying.value && segments.value[segIdx]) {
+      activeChapterIdx.value = segIdx - 1
+      if (segments.value[segIdx]) {
         statusText.value = `Playing (${segments.value[segIdx].speed}x)`
         statusMode.value = 'playing'
+      }
+    } else if (timeChanged) {
+      if (t <= 0.02) {
+        activeChapterIdx.value = -1
+        hitChapterIdx.value = -1
+        currentSegmentIdx.value = 0
+        const firstSpeed = segments.value[0]?.speed ?? props.speed
+        statusText.value = `Ready at 0. Start · Next: ${firstSpeed}x`
+        statusMode.value = ''
+        return
+      }
+      const matchedChapterIdx = findChapterAtTime(t)
+      if (matchedChapterIdx >= 0) {
+        activeChapterIdx.value = matchedChapterIdx
+        hitChapterIdx.value = matchedChapterIdx
+        const ch = chapters.value[matchedChapterIdx]
+        currentSegmentIdx.value = Math.min(segments.value.length - 1, matchedChapterIdx + 1)
+        statusText.value = `⏸ Stop Point ${matchedChapterIdx + 1}/${chapters.value.length}: ${ch.label} · Next: ${ch.nextSpeed}x`
+        statusMode.value = 'paused-marker'
+      } else {
+        const segIdx = findSegmentIndexAtTime(t)
+        currentSegmentIdx.value = segIdx
+        activeChapterIdx.value = segIdx - 1
+        hitChapterIdx.value = -1
       }
     }
   } catch (_) {
@@ -395,37 +461,86 @@ async function jumpToStart() {
   activeChapterIdx.value = -1
   hitChapterIdx.value = -1
   currentSegmentIdx.value = 0
+  if (isPlaying.value && props.pauseOnMarkers) {
+    await playerInstance.pause()
+    isPlaying.value = false
+  }
+  const firstSpeed = segments.value[0]?.speed ?? props.speed
+  if (isPlaying.value) {
+    statusText.value = `Playing (${firstSpeed}x)`
+    statusMode.value = 'playing'
+  } else {
+    statusText.value = `Ready at 0. Start · Next: ${firstSpeed}x`
+    statusMode.value = ''
+  }
+  lastPolledTime = 0
   await playerInstance.seek(0)
 }
 
 async function jumpToChapter(idx: number) {
   if (!playerInstance || idx < 0 || idx >= chapters.value.length) return
   activeChapterIdx.value = idx
-  hitChapterIdx.value = -1
   const ch = chapters.value[idx]
+  if (isPlaying.value && props.pauseOnMarkers) {
+    await playerInstance.pause()
+    isPlaying.value = false
+  }
+  hitChapterIdx.value = isPlaying.value ? -1 : idx
   currentSegmentIdx.value = Math.min(segments.value.length - 1, idx + 1)
+  if (isPlaying.value) {
+    statusText.value = `Playing (${ch.nextSpeed}x)`
+    statusMode.value = 'playing'
+  } else {
+    statusText.value = `⏸ Stop Point ${idx + 1}/${chapters.value.length}: ${ch.label} · Next: ${ch.nextSpeed}x`
+    statusMode.value = 'paused-marker'
+  }
+  lastPolledTime = ch.playTime
   await playerInstance.seek(ch.playTime)
 }
 
-function togglePlay() {
+async function jumpToEnd() {
+  if (!playerInstance || !segments.value.length) return
+  const tailSeg = segments.value[segments.value.length - 1]
+  if (isPlaying.value && props.pauseOnMarkers) {
+    await playerInstance.pause()
+    isPlaying.value = false
+  }
+  applyEndState('jumped')
+  await playerInstance.seek(tailSeg.endTime)
+}
+
+async function togglePlay() {
   if (!playerInstance) return
   if (isPlaying.value) {
     playerInstance.pause()
   } else {
+    if (activeChapterIdx.value >= chapters.value.length && chapters.value.length > 0) {
+      activeChapterIdx.value = -1
+      hitChapterIdx.value = -1
+      currentSegmentIdx.value = 0
+      lastPolledTime = 0
+      await playerInstance.seek(0)
+    }
     playerInstance.play()
   }
 }
 
 function stepPrevChapter() {
   if (!chapters.value.length) return
-  const target = Math.max(0, activeChapterIdx.value <= 0 ? 0 : activeChapterIdx.value - 1)
-  jumpToChapter(target)
+  if (activeChapterIdx.value <= 0) {
+    jumpToStart()
+  } else {
+    jumpToChapter(Math.min(chapters.value.length - 1, activeChapterIdx.value - 1))
+  }
 }
 
 function stepNextChapter() {
   if (!chapters.value.length) return
-  const target = Math.min(chapters.value.length - 1, activeChapterIdx.value + 1)
-  jumpToChapter(target)
+  if (activeChapterIdx.value < chapters.value.length - 1) {
+    jumpToChapter(activeChapterIdx.value + 1)
+  } else {
+    jumpToEnd()
+  }
 }
 
 function handleStageKeydown(e: KeyboardEvent) {
@@ -499,15 +614,18 @@ async function initPlayer() {
     })
 
     playerInstance = AsciinemaPlayer.create({ data: v2Text }, containerRef.value, playerOptions)
+    lastPolledTime = 0
 
     speedPollTimer = setInterval(() => {
-      if (isPlaying.value) {
-        syncLiveSpeedFromPlayer()
-      }
+      syncLiveSpeedFromPlayer()
     }, 100)
 
     playerInstance.addEventListener('play', () => {
       isPlaying.value = true
+      if (activeChapterIdx.value >= chapters.value.length) {
+        activeChapterIdx.value = -1
+        currentSegmentIdx.value = 0
+      }
       hitChapterIdx.value = -1
       const targetSegIdx =
         activeChapterIdx.value >= 0
@@ -519,16 +637,27 @@ async function initPlayer() {
       statusMode.value = 'playing'
     })
 
-    playerInstance.addEventListener('pause', () => {
+    playerInstance.addEventListener('pause', async () => {
       isPlaying.value = false
+      const tailSeg = segments.value[segments.value.length - 1]
+      if (tailSeg && typeof playerInstance?.getCurrentTime === 'function') {
+        try {
+          const t = await playerInstance.getCurrentTime()
+          if (typeof t === 'number' && t >= tailSeg.endTime - 0.05) {
+            applyEndState('ended')
+            return
+          }
+        } catch (_) {}
+      }
       if (statusMode.value !== 'paused-marker') {
         statusText.value = 'Paused'
         statusMode.value = ''
       }
     })
 
-    playerInstance.addEventListener('marker', ({ index, label }: { index: number; time: number; label: string }) => {
+    playerInstance.addEventListener('marker', ({ index, time, label }: { index: number; time: number; label: string }) => {
       activeChapterIdx.value = index
+      lastPolledTime = time
       const nextSeg = segments.value[Math.min(segments.value.length - 1, index + 1)]
       if (props.pauseOnMarkers) {
         isPlaying.value = false
@@ -545,9 +674,7 @@ async function initPlayer() {
     })
 
     playerInstance.addEventListener('ended', () => {
-      isPlaying.value = false
-      statusText.value = 'Ended'
-      statusMode.value = ''
+      applyEndState('ended')
     })
 
     if (typeof ResizeObserver !== 'undefined' && containerRef.value) {
@@ -584,14 +711,14 @@ function teardownPlayer() {
 }
 
 onMounted(() => {
-  window.addEventListener('keydown', handleStageKeydown)
+  window.addEventListener('keydown', handleStageKeydown, true)
   nextTick(() => {
     initPlayer()
   })
 })
 
 onUnmounted(() => {
-  window.removeEventListener('keydown', handleStageKeydown)
+  window.removeEventListener('keydown', handleStageKeydown, true)
   teardownPlayer()
 })
 
@@ -605,8 +732,8 @@ watch(
 
 <template>
   <div class="asciinema-player-wrapper">
-    <!-- Chapter Controls & Live Speed Bar -->
-    <div v-if="chapters.length > 0" class="asciinema-chapter-header">
+    <!-- Optional Development Chapter Controls & Live Speed Bar (enabled via showChapterBar: true) -->
+    <div v-if="props.showChapterBar && chapters.length > 0" class="asciinema-chapter-header">
       <div class="asciinema-header-top">
         <div class="asciinema-chapter-pills">
           <button
@@ -635,6 +762,21 @@ watch(
             <span class="chapter-speed-tag" :class="getSpeedTier(ch.inSpeed)">{{ ch.inSpeed }}x</span>
             <span class="chapter-time">{{ formatTime(ch.playTime) }}</span>
           </button>
+          <button
+            v-if="segments.length > chapters.length"
+            type="button"
+            class="chapter-pill"
+            :class="{
+              hit: hitChapterIdx === chapters.length,
+              active: activeChapterIdx === chapters.length && hitChapterIdx !== chapters.length,
+            }"
+            :title="`Final segment plays at ${segments[segments.length - 1].speed}x (${segments[segments.length - 1].warpedDuration.toFixed(1)}s) → stops at End`"
+            @click="jumpToEnd"
+          >
+            <span>→ End</span>
+            <span class="chapter-speed-tag" :class="getSpeedTier(segments[segments.length - 1].speed)">{{ segments[segments.length - 1].speed }}x</span>
+            <span class="chapter-time">{{ formatTime(segments[segments.length - 1].endTime) }}</span>
+          </button>
         </div>
 
         <div class="asciinema-transport">
@@ -646,7 +788,7 @@ watch(
             ◀ Prev
           </button>
           <button type="button" class="ctrl-btn ctrl-btn-primary" title="Play / Resume (p)" @click="togglePlay">
-            {{ isPlaying ? '⏸ Pause' : '▶ Resume' }}
+            {{ isPlaying ? '⏸ Pause' : activeChapterIdx >= chapters.length && chapters.length > 0 ? '↺ Replay' : '▶ Resume' }}
           </button>
           <button type="button" class="ctrl-btn" title="Next Stop Point (])" @click="stepNextChapter">
             Next ▶
@@ -659,7 +801,7 @@ watch(
 
     <div class="asciinema-speed-hint" :class="getSpeedTier(currentSpeed)">
       <span>Playback speed: <strong>{{ currentSpeed }}x</strong></span>
-      <template v-if="currentSegment">
+      <template v-if="props.showChapterBar && currentSegment">
         <span>·</span>
         <span>
           Segment {{ currentSegment.index + 1 }}/{{ segments.length }}:

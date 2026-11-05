@@ -4,17 +4,8 @@ import AsciinemaPlayer from '../components/AsciinemaPlayer.vue'
 
 <template>
   <div class="h-full w-full flex flex-col bg-[#121317] p-5 text-white overflow-hidden">
-    <!-- Header Bar (~10-12% height) -->
-    <div class="flex items-center justify-between pb-2 border-b border-gray-800/80 shrink-0">
-      <div class="flex items-center gap-3">
-        <h2 class="text-lg font-bold text-gray-100 tracking-wide m-0">
-          {{ $frontmatter.title || 'Terminal Session Recording' }}
-        </h2>
-      </div>
-    </div>
-
-    <!-- Main Viewport Area (85-90% height) -->
-    <div class="flex-1 w-full min-h-0 pt-3 flex items-center justify-center">
+    <!-- Main Viewport Area -->
+    <div class="flex-1 w-full min-h-0 flex items-center justify-center">
       <AsciinemaPlayer
         v-if="$frontmatter.cast || $frontmatter.castSrc"
         :src="$frontmatter.cast || $frontmatter.castSrc"
@@ -27,6 +18,7 @@ import AsciinemaPlayer from '../components/AsciinemaPlayer.vue'
         :theme="$frontmatter.theme ?? 'dracula'"
         :markers="$frontmatter.markers ?? []"
         :pauseOnMarkers="$frontmatter.pauseOnMarkers ?? true"
+        :showChapterBar="$frontmatter.showChapterBar ?? false"
         class="w-full h-full"
       />
       <div v-else class="w-full h-full flex flex-col justify-center">

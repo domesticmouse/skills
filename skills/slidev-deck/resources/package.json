@@ -1,15 +1,19 @@
 {
   "name": "slidev-presentation-deck",
+  "type": "module",
   "private": true,
   "scripts": {
+    "sync-casts": "mkdir -p public/casts && cp ../recordings/final/*.cast public/casts/ 2>/dev/null || true",
+    "predev": "npm run sync-casts",
     "dev": "slidev",
+    "prebuild": "npm run sync-casts",
     "build": "slidev build --base /<repo-name>/",
     "export": "slidev export"
   },
   "dependencies": {
-    "@slidev/cli": "^0.48.0",
+    "@slidev/cli": "^53.0.0",
     "@slidev/theme-default": "^0.25.0",
     "asciinema-player": "^3.8.0",
-    "vue": "^3.4.0"
+    "vue": "^3.5.0"
   }
 }

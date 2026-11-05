@@ -34,7 +34,7 @@ Before modifying an image, inspect its current dimensions, color channels, and w
    - **Dimensions**: Overall pixel width and height.
    - **Detected Border/Corner Color**: Color sampled from corners.
    - **Alpha Subject Bounding Box**: Coordinate extent `[left, top, right, bottom]` where alpha > 0.
-   - **Subject Margins**: Number of blank pixels on left, right, top, and bottom edges.
+   - **Subject Margins**: Number of blank pixels on left, right, top, and bottom edges. (Note: iOS Simulator captures taken via `xcrun simctl io booted screenshot /abs/path/to/file.png`—see `/ios-simulator-screenshot`—capture the exact device framebuffer with `0px` outer margin, whereas macOS window captures include transparent shadow margins that need `--autocrop`.)
 3. *Completion Criterion*: Bounding box coordinates and margin sizes are printed to stdout without modifying the source image.
 
 ---

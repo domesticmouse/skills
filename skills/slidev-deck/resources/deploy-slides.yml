@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - 'slides/**'
+      - 'recordings/final/**'
       - '.github/workflows/deploy-slides.yml'
   workflow_dispatch:
 

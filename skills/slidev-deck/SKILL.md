@@ -8,7 +8,7 @@ compatibility: Requires Node.js (v18+) and npm; integrates with Slidev (@slidev/
 
 Procedural runbook, reusable Vue components/layouts, and server tooling for building high-signal technical slide decks with [Slidev](https://sli.dev/) (`slides/`), embedded `asciinema-player` terminal recordings, dark-mode typography, and static GitHub Pages deployment.
 
-Works alongside `/asciinema` (recording, sanitizing, and trimming `.cast` files) and `/crop-image` (trimming transparent margins and solid borders on slide images).
+Works alongside `/asciinema` (recording, sanitizing, and trimming `.cast` files), `/ios-simulator-screenshot` (staging and verifying mobile simulator screen captures under `artifacts/screenshots/<project_name>/`), and `/crop-image` (trimming transparent margins and solid borders on slide images).
 
 ## Workflows
 
@@ -115,9 +115,9 @@ Follow the slide design conventions below. For copy-pasteable HTML/Markdown temp
 #### Choosing a Slide Layout:
 - **`layout: center` (`class: text-center`)**: Title slide, Act divider slides, and big-quote callouts.
 - **`layout: default`**: Concept lists, 2-column anti-pattern vs. solution cards (`bg-red-950/15` vs. `bg-emerald-950/15`), and code/architecture tables.
-- **`layout: cast-full`**: Full-viewport (85–90% height) interactive `asciinema-player` slide (`title`, `cast: /casts/file.cast`, `autoPlay: false`, `speed: 2.0`, `idleTimeLimit: 1.0`, `fit: both`).
-- **`layout: skill-breakdown`**: Framed zoom-in card with top-right monospace metadata (`way: 1|2|3|mashup`, `skill: path/to/file`, `title`, `step: Zoom-In 1 of 3`).
-- **`layout: hardware-callout`**: 12-column split pairing a framed image and optional caption overlay on the left (`title`, `subtitle`, `image: /images/file.png`, `imageCaption`) with explanatory HTML content in the default slot on the right.
+- **`layout: cast-full`**: Full-viewport interactive `asciinema-player` slide (`title`, `cast: /casts/file.cast`, `autoPlay: false`, `speed: 2.0`, `idleTimeLimit: 2.0`, `fit: both`, and optional `showChapterBar: true` during development).
+- **`layout: skill-breakdown`**: Framed zoom-in card (`way: 1|2|3|mashup`, `title`).
+- **`layout: hardware-callout`**: 12-column split pairing a framed image and optional caption overlay on the left (`title`, `image: /images/file.png`, `imageCaption`) with explanatory HTML content in the default slot on the right.
 
 *Completion Criterion*: Every authored slide includes a clean `<h2>` header (or uses a dedicated layout header), unindented code fences with blank line separators, and a conversational `<!-- ... -->` speaker note block.
 
@@ -128,7 +128,8 @@ Follow the slide design conventions below. For copy-pasteable HTML/Markdown temp
 Consult [`references/ASCIINEMA-INTEGRATION.md`](references/ASCIINEMA-INTEGRATION.md) for component props, Vite SSR rules, and base-path normalization details.
 
 1. **Prepare & Embed `.cast` Recordings**:
-   - Use `/asciinema` to sanitize secrets (`sanitize-cast.py`) and strip trailing shell exit prompts (`trim-cast.py --in-place`) before copying `.cast` files into `slides/public/casts/`.
+   - Treat `recordings/final/<name>.cast` as the single source of truth. Use `/asciinema` to sanitize secrets (`sanitize-cast.py`), strip trailing shell exit prompts (`trim-cast.py --in-place`), and place/verify `"m"` chapter stop points (`mark-cast.py --list` / `--set`) on the canonical recording in `recordings/final/`, then run `npm --prefix slides run sync-casts` (also executed automatically by `predev` and `prebuild`) to sync `recordings/final/*.cast` into `slides/public/casts/`.
+   - For shell commands and TUI launchers in `zsh` (e.g. `flutter create ...`, `git init && ...`, `agy`), place command-entry stop points on the typed/pasted command text rather than post-launch banners; `mark-cast.py` automatically advances past bracketed-paste reverse video (`[REV]`) to the un-reversed redraw (`[UNREV]`) and splits trailing `\x1b[1B\r\x1b[K` cursor-down sequences into a post-marker `"o"` event (`dt=0.02s`) so the cursor stays on the same line at the end of the command.
    - Reference recordings with root-relative paths in slide frontmatter:
      ```yaml
      ---
@@ -137,13 +138,14 @@ Consult [`references/ASCIINEMA-INTEGRATION.md`](references/ASCIINEMA-INTEGRATION
      cast: /casts/demo.cast
      autoPlay: false
      speed: 2.0
-     idleTimeLimit: 1.0
+     idleTimeLimit: 2.0
      fit: both
      ---
      ```
-   - When `speed` is set to a value other than `1`, `AsciinemaPlayer.vue` automatically renders a subtle `Playback speed: Nx` badge below the terminal.
+   - `AsciinemaPlayer.vue` compiles each breakpoint-bounded segment to run at `>= speed` (default `2.0x`) and complete in `<= maxSegmentDuration` (default `30s`). By default in final presentation slides (`showChapterBar: false`), it renders a clean minimalist `Playback speed: Nx` badge beneath the terminal while supporting `[` / `]` / `p` stage hotkeys; set `showChapterBar: true` in slide frontmatter during development to display interactive chapter stepper pills, transport controls, and segment metadata.
 2. **Prepare & Embed Images**:
-   - Use `/crop-image` (`crop.py --inspect` / `--autocrop`) to remove excess transparent margins or solid borders before placing images in `slides/public/images/`.
+   - For mobile app runs, use `/ios-simulator-screenshot` (`xcrun simctl io booted screenshot /abs/path/to/repo/artifacts/screenshots/<project_name>/<file>.png` with full absolute paths) to stage clean device-framebuffer screenshots per run in `artifacts/screenshots/<project_name>/`.
+   - Use `/crop-image` (`crop.py --inspect` / `--autocrop`) to verify dimensions or remove excess transparent margins/solid borders before copying presentation-ready images into `slides/public/images/`.
    - Reference images via `image: /images/<filename>` in `hardware-callout` slides.
 3. **Preserve `BASE_URL` Resolution in Custom Vue Files**:
    - In any custom Vue layout or component that loads local assets from `slides/public/`, normalize paths with `import.meta.env.BASE_URL` so assets resolve on both local dev (`/`) and GitHub Pages subpaths (`/<repo-name>/`).
@@ -190,5 +192,6 @@ Manage the background Slidev development server using the bundled [`scripts/slid
    mkdir -p .github/workflows
    cp .agents/skills/slidev-deck/resources/deploy-slides.yml .github/workflows/deploy-slides.yml
    ```
+   Ensure `on.push.paths` in `.github/workflows/deploy-slides.yml` includes every upstream directory synced by `prebuild` (e.g., `'slides/**'`, `'recordings/final/**'`, and any external tutorial or asset folders) so pushing changes to those files triggers the GitHub Pages workflow.
 3. Ensure repository GitHub Pages settings are configured with **Build and deployment > Source: GitHub Actions**.
 4. *Completion Criterion*: `npm --prefix slides run build` exits with returncode 0 and generates `slides/dist/index.html`.
