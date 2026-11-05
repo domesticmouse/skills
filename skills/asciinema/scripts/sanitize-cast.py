@@ -4,7 +4,8 @@ sanitize-cast.py: Sanitize and redact asciicast (.cast) recording files.
 
 Removes sensitive data risks:
 1. Strips stdin ('i') keystroke events (removes captured passwords and secrets).
-2. Cleans sensitive environment variables from the header (line 1), preserving only safe keys.
+2. Cleans sensitive environment variables from the header (line 1), preserving
+   only safe keys.
 3. Redacts specified patterns or tokens from terminal stdout ('o') output streams.
 """
 
@@ -15,7 +16,10 @@ import sys
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Sanitize asciinema .cast files by stripping stdin events and redacting secrets."
+        description=(
+            "Sanitize asciinema .cast files by stripping stdin events "
+            "and redacting secrets."
+        )
     )
     parser.add_argument("input", help="Path to raw input .cast file")
     parser.add_argument("output", help="Path to write sanitized .cast file")
@@ -23,16 +27,23 @@ def parse_args():
         "--redact",
         nargs="*",
         default=[],
-        help="Pairs of target=replacement strings to redact (e.g. 'secret_key=REDACTED')",
+        help=(
+            "Pairs of target=replacement strings to redact (e.g. 'secret_key=REDACTED')"
+        ),
     )
     parser.add_argument(
         "--redact-file",
-        help="Path to a text file containing strings to redact (one per line, replaced with [REDACTED])",
+        help=(
+            "Path to a text file containing strings to redact "
+            "(one per line, replaced with [REDACTED])"
+        ),
     )
     parser.add_argument(
         "--keep-stdin",
         action="store_true",
-        help="Do not strip stdin ('i') events (NOT recommended if passwords were typed)",
+        help=(
+            "Do not strip stdin ('i') events (NOT recommended if passwords were typed)"
+        ),
     )
     parser.add_argument(
         "--keep-env",
@@ -52,7 +63,7 @@ def load_redact_patterns(cli_patterns, file_path):
             patterns[item] = "[REDACTED]"
 
     if file_path:
-        with open(file_path, "r", encoding="utf-8") as f:
+        with open(file_path, encoding="utf-8") as f:
             for line in f:
                 target = line.strip()
                 if target and not target.startswith("#"):
@@ -68,9 +79,10 @@ def sanitize(input_path, output_path, redact_map, strip_stdin=True, scrub_env=Tr
     stripped_stdin_count = 0
     redacted_occurrences = 0
 
-    with open(input_path, "r", encoding="utf-8") as infile, open(
-        output_path, "w", encoding="utf-8"
-    ) as outfile:
+    with (
+        open(input_path, encoding="utf-8") as infile,
+        open(output_path, "w", encoding="utf-8") as outfile,
+    ):
         # 1. Process header line
         first_line = infile.readline()
         if not first_line:
@@ -85,12 +97,14 @@ def sanitize(input_path, output_path, redact_map, strip_stdin=True, scrub_env=Tr
 
         if scrub_env and "env" in header and isinstance(header["env"], dict):
             safe_env_keys = {"TERM", "SHELL"}
-            header["env"] = {k: v for k, v in header["env"].items() if k in safe_env_keys}
+            header["env"] = {
+                k: v for k, v in header["env"].items() if k in safe_env_keys
+            }
 
         outfile.write(json.dumps(header) + "\n")
 
         # 2. Process event stream
-        for line_num, line in enumerate(infile, start=2):
+        for _line_num, line in enumerate(infile, start=2):
             trimmed = line.strip()
             if not trimmed:
                 continue
@@ -103,15 +117,18 @@ def sanitize(input_path, output_path, redact_map, strip_stdin=True, scrub_env=Tr
             try:
                 event = json.loads(trimmed)
             except json.JSONDecodeError:
-                # If a line cannot be parsed, pass it through
-                outfile.write(line)
+                # Skip corrupted/truncated lines instead of emitting invalid JSON
                 continue
 
             if not isinstance(event, list) or len(event) < 3:
-                outfile.write(line)
                 continue
 
-            event_time, event_type, event_data = event[0], event[1], event[2]
+            _event_time, event_type, event_data = event[0], event[1], event[2]
+
+            # Stop after the recording exit ('x') event so trailing output from an outer shell is ignored
+            if event_type == "x":
+                outfile.write(json.dumps(event) + "\n")
+                break
 
             # Strip stdin keystroke events
             if strip_stdin and event_type == "i":

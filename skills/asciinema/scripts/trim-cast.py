@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """
-trim-cast.py: Inspect timing and strip trailing exit sequences from asciicast (.cast) recordings.
+trim-cast.py: Inspect timing and strip trailing exit sequences from asciicast
+(.cast) recordings.
 
 Capabilities:
-1. Inspect timing: Computes raw duration, playback duration (accounting for idle_time_limit),
-   and event breakdown across asciicast v2 and v3 formats.
-2. Strip trailing exit sequences: Detects and cuts Ctrl+D sequences, "press ctrl+d again to exit"
-   warnings, shell drop-backs, and trailing subshell exits.
-3. Holds final frame: Appends a clean exit code event ('x') with a configurable trailing hold
-   (default: 3.0s), preventing abrupt video/animation cutoffs or instant replay loops.
+1. Inspect timing: Computes raw duration, playback duration (accounting for
+   idle_time_limit), and event breakdown across asciicast v2 and v3 formats.
+2. Strip trailing exit sequences: Detects and cuts Ctrl+D sequences,
+   "press ctrl+d again to exit" warnings, shell drop-backs, and trailing
+   subshell exits.
+3. Holds final frame: Appends a clean exit code event ('x') with a configurable
+   trailing hold (default: 3.0s), preventing abrupt video/animation cutoffs or
+   instant replay loops.
 4. Preserves formatting: Keeps unmodified recording lines byte-for-byte identical.
 """
 
@@ -21,7 +24,9 @@ import sys
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Inspect asciicast duration and strip trailing Ctrl+D / exit sequences."
+        description=(
+            "Inspect asciicast duration and strip trailing Ctrl+D / exit sequences."
+        )
     )
     parser.add_argument("input", help="Path to input .cast file")
     parser.add_argument(
@@ -45,19 +50,27 @@ def parse_args():
         "--hold",
         type=float,
         default=3.0,
-        help="Duration (seconds) to hold final frame before process exit (default: 3.0)",
+        help=(
+            "Duration (seconds) to hold final frame before process exit (default: 3.0)"
+        ),
     )
     parser.add_argument(
         "--idle-limit",
         type=float,
         default=None,
-        help="Override idle_time_limit from cast header for playback duration calculation",
+        help=(
+            "Override idle_time_limit from cast header for playback duration "
+            "calculation"
+        ),
     )
     parser.add_argument(
         "--cut-at",
         type=str,
         default=None,
-        help="Explicit substring in stdout ('o') data to trigger cutting (cut includes this event and all following)",
+        help=(
+            "Explicit substring in stdout ('o') data to trigger cutting "
+            "(cut includes this event and all following)"
+        ),
     )
     parser.add_argument(
         "--cut-regex",
@@ -69,12 +82,17 @@ def parse_args():
         "--cut-index",
         type=int,
         default=None,
-        help="Explicit 0-based event index to cut at (cuts this event and all following)",
+        help=(
+            "Explicit 0-based event index to cut at (cuts this event and all following)"
+        ),
     )
     parser.add_argument(
         "--to-v2",
         action="store_true",
-        help="Convert asciicast v3 header and relative dt events to asciicast v2 (for asciinema-player <3.10 web compatibility)",
+        help=(
+            "Convert asciicast v3 header and relative dt events to asciicast v2 "
+            "(for asciinema-player <3.10 web compatibility)"
+        ),
     )
     return parser.parse_args()
 
@@ -114,7 +132,7 @@ def load_cast(file_path):
     events = []
     header = None
     header_raw = None
-    with open(file_path, "r", encoding="utf-8") as f:
+    with open(file_path, encoding="utf-8") as f:
         first_line = f.readline()
         if not first_line:
             sys.stderr.write("Error: Input file is empty.\n")
@@ -162,7 +180,11 @@ def calculate_durations(header, events, idle_limit_override=None):
             event_counts[ev_type if ev_type in event_counts else "other"] += 1
             dt = float(ev.parsed[0])
             raw_duration += dt
-            capped_duration += min(dt, idle_limit) if (idle_limit is not None and idle_limit > 0) else dt
+            capped_duration += (
+                min(dt, idle_limit)
+                if (idle_limit is not None and idle_limit > 0)
+                else dt
+            )
     else:  # version 2 (absolute timestamps)
         prev_time = 0.0
         for ev in events:
@@ -173,7 +195,11 @@ def calculate_durations(header, events, idle_limit_override=None):
             curr_time = float(ev.parsed[0])
             dt = max(0.0, curr_time - prev_time)
             raw_duration = curr_time
-            capped_duration += min(dt, idle_limit) if (idle_limit is not None and idle_limit > 0) else dt
+            capped_duration += (
+                min(dt, idle_limit)
+                if (idle_limit is not None and idle_limit > 0)
+                else dt
+            )
             prev_time = curr_time
 
     return {
@@ -190,7 +216,10 @@ def find_cut_index(events, cut_at=None, cut_regex=None, cut_index=None):
     if cut_index is not None:
         if 0 <= cut_index < len(events):
             return cut_index
-        sys.stderr.write(f"Error: Specified --cut-index {cut_index} is out of bounds (0..{len(events)-1})\n")
+        sys.stderr.write(
+            f"Error: Specified --cut-index {cut_index} is out of bounds "
+            f"(0..{len(events) - 1})\n"
+        )
         sys.exit(1)
 
     custom_re = re.compile(cut_regex) if cut_regex else None
@@ -220,19 +249,31 @@ def print_info(title, stats):
     print(f"\n{title}")
     print("=" * len(title))
     print(f"Format Version:       asciicast v{stats['version']}")
-    print(f"Total Events:         {stats['total_events']} (stdout: {stats['event_counts']['o']}, stdin: {stats['event_counts']['i']}, markers: {stats['event_counts']['m']}, exit: {stats['event_counts']['x']})")
+    ec = stats["event_counts"]
+    print(
+        f"Total Events:         {stats['total_events']} "
+        f"(stdout: {ec['o']}, stdin: {ec['i']}, markers: {ec['m']}, exit: {ec['x']})"
+    )
     print(f"Raw Duration:         {format_duration(stats['raw_duration'])}")
     if stats["idle_limit"]:
-        print(f"Playback Duration:    {format_duration(stats['capped_duration'])} (capped at {stats['idle_limit']:.1f}s idle limit)")
+        print(
+            f"Playback Duration:    {format_duration(stats['capped_duration'])} "
+            f"(capped at {stats['idle_limit']:.1f}s idle limit)"
+        )
     else:
-        print(f"Playback Duration:    {format_duration(stats['capped_duration'])} (no idle_time_limit)")
+        print(
+            f"Playback Duration:    {format_duration(stats['capped_duration'])} "
+            "(no idle_time_limit)"
+        )
 
 
 def write_cast(file_path, header_line, events):
     with open(file_path, "w", encoding="utf-8") as f:
         f.write(header_line if header_line.endswith("\n") else header_line + "\n")
-        for ev in events:
-            f.write(ev.raw_line if ev.raw_line.endswith("\n") else ev.raw_line + "\n")
+        f.writelines(
+            ev.raw_line if ev.raw_line.endswith("\n") else ev.raw_line + "\n"
+            for ev in events
+        )
 
 
 def convert_events_to_v2(header, events):
@@ -262,12 +303,11 @@ def convert_events_to_v2(header, events):
         data = ev.parsed[2] if len(ev.parsed) > 2 else ""
         abs_time = (abs_time + t_val) if version == 3 else t_val
         ts = round(abs_time, 6)
-        if code == "x":
-            # In v2, hold the final frame with a no-op stdout event
-            new_parsed = [ts, "o", ""]
-        else:
-            new_parsed = [ts, code, data]
-        v2_events.append(CastEvent(new_parsed, json.dumps(new_parsed, ensure_ascii=False) + "\n"))
+        # In v2, hold the final frame with a no-op stdout event
+        new_parsed = [ts, "o", ""] if code == "x" else [ts, code, data]
+        v2_events.append(
+            CastEvent(new_parsed, json.dumps(new_parsed, ensure_ascii=False) + "\n")
+        )
 
     v2_header["duration"] = round(abs_time, 3)
     return v2_header, json.dumps(v2_header, ensure_ascii=False) + "\n", v2_events
@@ -284,16 +324,27 @@ def main():
         auto_cut = find_cut_index(events, args.cut_at, args.cut_regex, args.cut_index)
         if auto_cut is not None:
             ev = events[auto_cut]
-            sample = repr(ev.parsed[2][:60]) if (ev.is_event and len(ev.parsed) > 2) else ""
+            sample = (
+                repr(ev.parsed[2][:60]) if (ev.is_event and len(ev.parsed) > 2) else ""
+            )
             print(f"\nDetected Trailing Exit Sequence at event #{auto_cut}:")
             print(f"  Payload sample: {sample}")
             trimmed = events[:auto_cut]
             trimmed_stats = calculate_durations(header, trimmed, args.idle_limit)
             saved_raw = orig_stats["raw_duration"] - trimmed_stats["raw_duration"]
-            print(f"  Duration if trimmed (+{args.hold:.1f}s hold): {format_duration(trimmed_stats['raw_duration'] + args.hold)}")
+            trimmed_hold_dur = format_duration(
+                trimmed_stats["raw_duration"] + args.hold
+            )
+            print(f"  Duration if trimmed (+{args.hold:.1f}s hold): {trimmed_hold_dur}")
             print(f"  Time savable: ~{saved_raw:.2f}s")
-            print("\nTo strip this sequence, run with --in-place or provide an output path:")
-            print(f"  python3 .agents/skills/asciinema/scripts/trim-cast.py {args.input} --in-place")
+            print(
+                "\nTo strip this sequence, run with --in-place "
+                "or provide an output path:"
+            )
+            print(
+                "  python3 .agents/skills/asciinema/scripts/trim-cast.py "
+                f"{args.input} --in-place"
+            )
         else:
             print("\nNo trailing exit sequence pattern detected automatically.")
         return
@@ -307,7 +358,7 @@ def main():
     kept_events = list(events[:cut_idx]) if cut_idx is not None else list(events)
     version = orig_stats["version"]
 
-    # Append clean exit / final-frame hold event if we trimmed (or if no trailing hold exists)
+    # Append clean exit / final-frame hold event if we trimmed
     if cut_idx is not None:
         if version == 3:
             exit_ev = [round(args.hold, 3), "x", "0"]
@@ -344,8 +395,9 @@ def main():
 
     saved_raw = orig_stats["raw_duration"] - new_stats["raw_duration"]
     saved_capped = orig_stats["capped_duration"] - new_stats["capped_duration"]
+    stripped_cnt = orig_stats["total_events"] - new_stats["total_events"]
     print("\nSummary:")
-    print(f"  Stripped events:       {orig_stats['total_events'] - new_stats['total_events']} trailing events")
+    print(f"  Stripped events:       {stripped_cnt} trailing events")
     print(f"  Held final frame:      {args.hold:.1f}s")
     print(f"  Net raw time saved:    {saved_raw:.2f}s")
     if orig_stats["idle_limit"]:

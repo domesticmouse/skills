@@ -1,11 +1,11 @@
 ---
 name: asciinema
-description: Record, replay, convert, and embed terminal sessions. Use when recording terminal demos, converting .cast files to animated GIF or SVG, embedding asciinema-player in web apps, sanitizing terminal recordings, inspecting cast durations, or trimming trailing exit sequences.
+description: Record, replay, convert, sanitize, trim, tighten paste/input delays, and manage chapter markers ("m" stop points) in terminal sessions. Use when recording terminal demos, converting .cast files to animated GIF or SVG, embedding asciinema-player in web apps, sanitizing terminal recordings, inspecting cast durations, shortening cut-and-paste or prompt pauses, trimming trailing exit sequences, or adding/moving/inspecting chapter stop-point markers.
 ---
 
 # Asciinema
 
-Tools and procedures to record, replay, export, sanitize, and embed terminal sessions using the asciinema ecosystem.
+Tools and procedures to record, replay, export, sanitize, trim, and manage chapter stop points in terminal sessions using the asciinema ecosystem.
 
 ## Workflows
 
@@ -16,8 +16,9 @@ Identify the user's objective and choose the matching workflow:
 3. [Convert and Export (GIF / SVG / Text)](#3-convert-and-export)
 4. [Sanitize and Redact Sensitive Data](#4-sanitize-and-redact-sensitive-data)
 5. [Trim Exit Sequences and Inspect Timing](#5-trim-exit-sequences-and-inspect-timing)
-6. [Embed in Web Applications](#6-embed-in-web-applications)
-7. [Self-Host an asciinema Server](#7-self-host-an-asciinema-server)
+6. [Manage Chapter Markers (`"m"` Stop Points)](#6-manage-chapter-markers-m-stop-points)
+7. [Embed in Web Applications](#7-embed-in-web-applications)
+8. [Self-Host an asciinema Server](#8-self-host-an-asciinema-server)
 
 ---
 
@@ -176,12 +177,89 @@ python3 .agents/skills/asciinema/scripts/trim-cast.py session.cast --in-place --
 python3 .agents/skills/asciinema/scripts/trim-cast.py session.cast --in-place --to-v2
 ```
 
-- **Post-Recording Chapter Marker (`"m"`) Placement Rule**: When injecting `"m"` stop-point events into a `.cast` file after recording (because `Ctrl+x` was omitted live), insert `[0.0, "m", "<label>"]` (v3) or `[abs_time, "m", "<label>"]` (v2) **immediately after** the `"o"` stdout event that finishes drawing the target prompt/question frame (right before the user's thinking/typing pause `dt`). Inserting *before* the prompt renders leaves the screen blank or half-drawn when `asciinema play -m` or `pauseOnMarkers: true` pauses at the marker.
 - **Checkable Completion Criterion**: Run `python3 .agents/skills/asciinema/scripts/trim-cast.py <file> --info`. Confirm that no trailing exit sequence is detected and duration matches the expected trimmed time.
 
 ---
 
-### 6. Embed in Web Applications
+### 6. Manage Chapter Markers (`"m"` Stop Points)
+
+Use the bundled utility script [scripts/mark-cast.py](scripts/mark-cast.py) to list, search, inspect, add, move/replace, or remove `"m"` chapter markers in `asciicast` v2 and v3 files, and optionally re-embed updated `.cast` files into standalone HTML players.
+
+#### A. List Markers & Adaptive Segment Timings
+```bash
+python3 .agents/skills/asciinema/scripts/mark-cast.py session.cast --list
+```
+Prints every `"m"` event with its 1-based `[N]` index, 0-based event `#idx`, `raw` elapsed time, `1x` idle-capped time, adaptive segment speed (`>= 2x`, `<= 30s` per segment), and cumulative `warped` time.
+
+#### B. Search Output & Inspect Event Boundaries
+Before placing or moving a stop point, locate the exact stdout (`"o"`) event index. Both `--search` and `--inspect` annotate stdout events with diagnostic tags so shell paste/redraw phases are visible at a glance:
+- **`[REV]`**: Bracketed-paste echo in reverse video (`\x1b[7m...`).
+- **`[UNREV]`**: `Enter` key redraw that strips reverse video (`\x1b[A...\x1b[27m...`).
+- **`[OSC]`**: Pre-exec OSC window title (`\x1b]2;<cmd>\x07`) emitted immediately before command stdout starts.
+
+```bash
+# Search stdout for a pattern and show 2 surrounding events before/after each match
+python3 .agents/skills/asciinema/scripts/mark-cast.py session.cast --search "flutter create" --context 2
+
+# Inspect a specific event range (e.g. events #0..#25) with dt, raw, 1x, code, tags, and ANSI-stripped text
+python3 .agents/skills/asciinema/scripts/mark-cast.py session.cast --inspect 0:25
+```
+
+#### C. Placement Rules: Command-Entry Hold vs. Command-Completion Hold vs. Two-Stop Prompt/Question Hold
+Always place `"m"` markers (`[0.0, "m", "<label>"]` in v3, `[abs_time, "m", "<label>"]` in v2) **immediately after** the `"o"` stdout event that finishes drawing the target frame (default behavior of `mark-cast.py`):
+- **Command-Entry Hold (pause after a shell command or TUI launcher is typed/pasted and reverse video is cleared, with the cursor still on the command line, *before* command output or TUI startup)**: Match the command text itself (e.g. `flutter create --platforms=ios my_app`, `git init && git add . && git commit -m "Initial scaffold"`, or `agy`—not the post-launch `Antigravity CLI` welcome banner). In `zsh` with bracketed paste (`\x1b[?2004h`), pasting and running a command emits `[REV]` (reverse-video paste) → `[UNREV]` (`Enter` redraw removing reverse video `\x1b[A...\x1b[27m...` plus a trailing cursor-down `\x1b[1B\r\x1b[K`) → mode resets (`\x1b>`, `\x1b[?2004l\r\r\n`) → `[OSC]` (`preexec` title `2;<cmd>`). By default, `mark-cast.py` advances from `[REV]` to `[UNREV]` and splits any trailing `\x1b[1B\r\x1b[K` cursor-down sequence into a follow-up `"o"` event (`dt=0.02s`) after the marker. Giving the split post-marker `"o"` event a positive `dt` (`0.02s`) ensures its `asciicast-v2` timestamp is strictly greater than the marker timestamp `T_m`, preventing `asciinema-player` (`pauseOnMarkers` or `player.seek(T_m)`) from executing the cursor-down sequence while paused at the stop point (pass `--raw-match` only if you explicitly want the raw `[REV]` paste frame).
+- **Command-Completion / `/clear` Hold (pause *after* a command or `/clear` finishes running)**: Match the final stdout frame of the command's output (e.g. `"All done!"`, `"root-commit.*Initial scaffold"`, or the fresh `Antigravity CLI` banner redraw after `/clear`).
+- **Two-Stop Interactive Prompt / Question Hold (Before Typing + After Typing Before `Enter`)**:
+  1. **Stop 1 — Before Typing (`Q: ...` / `Ready for ...`)**: Match the bottom status/footer of the TUI prompt frame (whether an `ask_user` selector widget with `enter Submit`/`enter Select` or a prose question ending with `? for shortcuts`), right before the first typed/pasted character of the user's response (`dt > 0`).
+  2. **Stop 2 — After Typing, Before `Enter` (`Answer: ...` / `/command`)**: Match the final stdout frame that echoes the user's complete typed/pasted response or slash command in the input box, right before the `Enter` submission event (`\x1b[\d+D\x1b[K` input clear or `Thinking...`/`Generating...` spinner). Always verify that every "after typing" stop point has a matching "before typing" stop point preceding the typing sequence.
+  - When a synchronized TUI redraw (`\x1b[?2026h`…`\x1b[?2026l`) spans multiple `dt = 0.0` PTY chunks, `mark-cast.py` automatically advances across consecutive `dt = 0.0` `"o"` events so the marker sits after the complete frame flush.
+
+#### D. Move/Replace, Add, or Remove Markers, and Tighten Paste Delays
+```bash
+# Move/replace an existing marker (by 1-based number or label substring) to a command/pattern, @event:IDX, @time:SEC, or @1x:SEC
+# (Automatically advances from [REV] bracketed-paste highlight to [UNREV] and splits trailing cursor-down so the cursor stays on the command line)
+python3 .agents/skills/asciinema/scripts/mark-cast.py session.cast \
+  --set 1 "flutter create --platforms=ios my_app" "1. Create Project" \
+  --set 2 'git init && git add . && git commit -m "Initial scaffold"' "2. Initial Git Commit" \
+  --set 3 "agy" "3. Launch agy" \
+  --in-place
+
+python3 .agents/skills/asciinema/scripts/mark-cast.py session.cast \
+  --set "Create Project" "@event:11" "1. Create Project" --in-place
+
+# Add a new marker right after a stdout pattern (use pattern#2 for 2nd occurrence)
+python3 .agents/skills/asciinema/scripts/mark-cast.py session.cast \
+  --add-pattern "> please fix" "11. Apply Review Fixes" --in-place
+
+# Auto-inject a batch of markers from a JSON specification file
+python3 .agents/skills/asciinema/scripts/mark-cast.py session.cast \
+  --auto-spec markers.json --in-place
+
+# Remove a specific marker by number or label substring
+python3 .agents/skills/asciinema/scripts/mark-cast.py session.cast --remove 1 --in-place
+
+# Automatically tighten cut-and-paste delays ([REV]/prompt paste -> 1.0s, [UNREV] Enter -> 0.15s, prompt submit -> 0.20s)
+python3 .agents/skills/asciinema/scripts/mark-cast.py session.cast \
+  --tighten-pastes --in-place --embed-html player.html
+
+# Set the relative delay (dt) of specific event indices directly (shifts subsequent timestamps automatically in v2)
+python3 .agents/skills/asciinema/scripts/mark-cast.py session.cast \
+  --set-dt 7 1.0 --set-dt 8 0.15 --in-place --embed-html player.html
+
+# Update markers AND sync gzip+base64 EMBEDDED_CAST_GZ_B64 in a standalone HTML player in one step
+python3 .agents/skills/asciinema/scripts/mark-cast.py session.cast \
+  --set 1 "flutter create --platforms=ios my_app" "1. Create Project" \
+  --set 2 'git init && git add . && git commit -m "Initial scaffold"' "2. Initial Git Commit" \
+  --set 3 "agy" "3. Launch agy" \
+  --in-place --embed-html player.html
+```
+
+- **Checkable Completion Criterion**: Run `python3 .agents/skills/asciinema/scripts/mark-cast.py <file> --list` and `--inspect <idx>` around modified markers to confirm every command-entry marker sits immediately after `[UNREV]` (reverse video cleared, cursor on the same line as the command) and before the split `\x1b[1B\r\x1b[K` cursor-down and command output frames.
+- **Standalone HTML Cast Players (`*-cast-player.html`)**: When editing, reviewing, or scaffolding standalone HTML cast-player harnesses, read [`../cast-player-html/SKILL.md`](../cast-player-html/SKILL.md).
+
+---
+
+### 7. Embed in Web Applications
 
 Integrate interactive virtual terminal playback using `asciinema-player` v3 (WASM/Rust driven).
 
@@ -194,7 +272,7 @@ Consult [EMBEDDING.md](EMBEDDING.md) for complete copy-pasteable code examples:
 
 ---
 
-### 7. Self-Host an asciinema Server
+### 8. Self-Host an asciinema Server
 
 For private session repositories, air-gapped networks, or corporate compliance:
 - Run `asciinema-server` via Docker Compose (Phoenix + PostgreSQL).
