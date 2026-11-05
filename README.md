@@ -34,11 +34,11 @@ Discovers, lists, inspects, compares, audits, exports, and safely deletes Google
 
 ### [`asciinema`](skills/asciinema/SKILL.md)
 
-Records, replays, converts, sanitizes, trims, and embeds terminal sessions using the asciinema ecosystem.
+Records, replays, converts, sanitizes, trims, tightens paste/input delays, and manages `"m"` chapter markers (stop points) in terminal sessions using the asciinema ecosystem.
 
-**Origin:** Built with reference guides ([`FORMAT.md`](skills/asciinema/FORMAT.md), [`EMBEDDING.md`](skills/asciinema/EMBEDDING.md), [`SELF-HOSTING.md`](skills/asciinema/SELF-HOSTING.md)) and zero-dependency Python helper scripts ([`sanitize-cast.py`](skills/asciinema/scripts/sanitize-cast.py) and [`trim-cast.py`](skills/asciinema/scripts/trim-cast.py)) to streamline preparing clean `.cast` recordings for documentation, slides, and web players.
+**Origin:** Built with reference guides ([`FORMAT.md`](skills/asciinema/FORMAT.md), [`EMBEDDING.md`](skills/asciinema/EMBEDDING.md), [`SELF-HOSTING.md`](skills/asciinema/SELF-HOSTING.md)) and zero-dependency Python helper scripts ([`sanitize-cast.py`](skills/asciinema/scripts/sanitize-cast.py), [`trim-cast.py`](skills/asciinema/scripts/trim-cast.py), and [`mark-cast.py`](skills/asciinema/scripts/mark-cast.py)) to streamline preparing clean, chapter-indexed `.cast` recordings for documentation, slides, and web players.
 
-**Intended Usage:** Activated when recording terminal demos, converting `.cast` files to animated GIF (`agg`) or SVG (`svg-term`), stripping `stdin` keystrokes and redacting secrets, trimming trailing `Ctrl+D` exit sequences with a clean final-frame hold, or embedding `asciinema-player` in web apps.
+**Intended Usage:** Activated when recording terminal demos, converting `.cast` files to animated GIF (`agg`) or SVG (`svg-term`), stripping `stdin` keystrokes and redacting secrets, trimming trailing `Ctrl+D` exit sequences with a clean final-frame hold, adding/moving/inspecting `"m"` chapter stop points, shortening cut-and-paste pauses, or embedding `asciinema-player` in web apps.
 
 ### [`bjm-voice`](skills/bjm-voice/SKILL.md)
 
@@ -48,6 +48,14 @@ Guides the agent in writing, editing, or reviewing blog posts, tutorials, articl
 
 **Intended Usage:** Activated when drafting, editing, or reviewing blog posts, tutorials, articles, or social media updates that should sound like Brett.
 
+### [`cast-player-html`](skills/cast-player-html/SKILL.md)
+
+Scaffolds, edits, and manages standalone HTML `asciinema-player` harnesses (`*-cast-player.html`) with inline gzip+base64 `.cast` recordings (`EMBEDDED_CAST_GZ_B64`), adaptive per-segment playback speeds (`>= 2x`, `<= 30s` per segment), interactive chapter stepper pills, and stage hotkeys (`p`, `[`, `]`).
+
+**Origin:** Built around a self-contained 16:9 HTML template ([`cast-player-template.html`](skills/cast-player-html/resources/cast-player-template.html)) and paired with [`mark-cast.py --embed-html`](skills/asciinema/scripts/mark-cast.py) so terminal recordings can be opened directly over `file://` without CORS errors to test-drive and fine-tune stop points before syncing into a Slidev deck.
+
+**Intended Usage:** Activated when scaffolding a standalone HTML player prototype for a `.cast` recording, adding/moving/renaming stop points viewed in an HTML player, tightening cut-and-paste delays (`dt`), or tuning adaptive segment speeds and HUD controls.
+
 ### [`crop-image`](skills/crop-image/SKILL.md)
 
 Crops, trims, and adjusts image framing by removing transparent whitespace margins, trimming solid color borders, or extracting specific pixel bounding boxes.
@@ -56,11 +64,19 @@ Crops, trims, and adjusts image framing by removing transparent whitespace margi
 
 **Intended Usage:** Activated when inspecting image dimensions and subject margins, autocropping transparent or solid-color borders with configurable padding, or cropping images to exact pixel coordinates.
 
+### [`ios-simulator-screenshot`](skills/ios-simulator-screenshot/SKILL.md)
+
+Plans, walks through, captures, and verifies iOS Simulator screenshots using `xcrun simctl io booted screenshot` with full absolute paths.
+
+**Origin:** Created to standardize staging clean, zero-margin device-framebuffer screenshots (`artifacts/screenshots/<project_name>/`) by discovering an app's actual views/screens and generating copy-pasteable `simctl` walkthroughs that work from any active terminal directory.
+
+**Intended Usage:** Activated when the user asks where to store mobile app screenshots, which screens to capture for an iOS or Flutter app run, wants a step-by-step `xcrun simctl` screenshot walkthrough, or asks to visually and dimensionally verify captured simulator PNGs alongside `/crop-image` and `/slidev-deck`.
+
 ### [`slidev-deck`](skills/slidev-deck/SKILL.md)
 
 Scaffolds, authors, styles, previews, and deploys dark-theme [Slidev](https://sli.dev/) presentation decks (`slides/`) with modular act files, custom Vue layouts, and embedded `asciinema-player` terminal recordings.
 
-**Origin:** Extracted from building technical presentation decks combining modular Slidev acts, high-contrast Tokyo Night / Dracula terminal themes, SSR-safe `AsciinemaPlayer.vue` wrappers with `BASE_URL` asset resolution, custom zoom-in and visual callout layouts, background dev-server management ([`slides-server.sh`](skills/slidev-deck/scripts/slides-server.sh)), and GitHub Pages CI deployment.
+**Origin:** Extracted from building technical presentation decks combining modular Slidev acts, high-contrast Tokyo Night / Dracula terminal themes, SSR-safe [`AsciinemaPlayer.vue`](skills/slidev-deck/resources/components/AsciinemaPlayer.vue) wrappers with adaptive segment speed compilation, opt-in development chapter stepper bars (`showChapterBar`), `BASE_URL` asset resolution, custom zoom-in and visual callout layouts, background dev-server management ([`slides-server.sh`](skills/slidev-deck/scripts/slides-server.sh)), and GitHub Pages CI deployment.
 
 **Intended Usage:** Activated when creating a new Slidev deck, authoring or refactoring slides and conversational presenter notes, embedding `.cast` terminal recordings or visual callouts, running the local Slidev dev server, or configuring GitHub Pages deployment.
 
