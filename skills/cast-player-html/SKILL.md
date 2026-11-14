@@ -57,7 +57,7 @@ python3 .agents/skills/asciinema/scripts/mark-cast.py recordings/final/session.c
 Place every `"m"` marker **immediately after** the `"o"` stdout event that completes the target visual frame:
 
 - **A. Shell Command / TUI Launcher Entry (`flutter create...`, `git init...`, `agy`)**:
-  Match the command text itself. In `zsh` with bracketed paste, `mark-cast.py` automatically advances from `[REV]` (`\x1b[7m` highlight) to `[UNREV]` (`\x1b[27m` Enter redraw) and splits any trailing `\x1b[1B\r\x1b[K` cursor-down into a post-marker `"o"` event (`dt=0.02s`) so the cursor stays on the command line while paused.
+  Match the command text itself. With bracketed paste, `mark-cast.py` handles both `bash` (GNU Readline `\x08+...` redraw and `\r\n\x1b[?2004l\r...` split) and `zsh` (`[REV]` `\x1b[7m` highlight -> `[UNREV]` `\x1b[27m` Enter redraw and `\x1b[1B\r\x1b[K` cursor-down split), placing the trailing newline/cursor-down into a post-marker `"o"` event (`dt=0.02s`) so the cursor stays on the command line while paused.
 - **B. Two-Stop Pattern for Questions, Typed Prompts, and Slash Commands**:
   Use **two paired stop points** for each question/answer or prompt entry so the presenter can pause on the prompt/question first, step once to reveal the typed response, and step again to submit it:
   1. **Before Typing (`Q: ...` / `Ready for ...`)**: Place immediately after the stdout frame that finishes rendering the question (whether an interactive `ask_user` widget with `enter Select`/`enter Submit` or a prose question ending at `? for shortcuts`) or empty input box, right before the first keystroke/paste event of the user's answer.

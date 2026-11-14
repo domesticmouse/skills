@@ -101,7 +101,7 @@ def parse_args():
 DEFAULT_EXIT_PATTERNS = [
     re.compile(r"press ctrl\+d again to exit", re.IGNORECASE),
     re.compile(r"Resume with -c \(or command below\):", re.IGNORECASE),
-    re.compile(r"\bexit\r?\n", re.IGNORECASE),
+    re.compile(r"\b(?:exit|logout)\r?\n", re.IGNORECASE),
 ]
 
 

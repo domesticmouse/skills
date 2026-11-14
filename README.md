@@ -84,7 +84,7 @@ Scaffolds, authors, styles, previews, and deploys dark-theme [Slidev](https://sl
 
 An interactive, stateful code-teaching workflow that builds self-contained HTML lessons (compiled from Markdown via `build.py`), printable reference sheets, learning records, and runnable per-lesson companion projects in `apps/` verified with automated tests and linters.
 
-**Origin:** Derived from Matt Pocock's original [`teach` skill](https://www.aihero.dev/skills-teach) and refined across multiple hands-on technical courses to incorporate Tufte-inspired dark/print typography, Prism.js `keep-markup` fill-in-the-blank exercises, Mermaid.js diagrams, equal-length retrieval quizzes, block-by-block code walkthroughs, and automated verification gates.
+**Origin:** Derived from Matt Pocock's original [`teach` skill](https://www.aihero.dev/skills-teach) and refined across multiple hands-on technical courses to incorporate Tufte-inspired dark/print typography, Prism.js `keep-markup` fill-in-the-blank exercises, Mermaid.js diagrams, equal-length retrieval quizzes, block-by-block code walkthroughs, reference schema templates ([`LESSON-FORMAT.md`](skills/teach-code/references/LESSON-FORMAT.md), [`MISSION-FORMAT.md`](skills/teach-code/references/MISSION-FORMAT.md), [`RESOURCES-FORMAT.md`](skills/teach-code/references/RESOURCES-FORMAT.md), [`LEARNING-RECORD-FORMAT.md`](skills/teach-code/references/LEARNING-RECORD-FORMAT.md), [`GLOSSARY-FORMAT.md`](skills/teach-code/references/GLOSSARY-FORMAT.md)), a companion listing synchronizer ([`sync_listing.py`](skills/teach-code/scripts/sync_listing.py)), and automated verification gates.
 
 **Intended Usage:** Invoke with `/teach-code` (or ask the agent to teach a programming language, framework, or engineering tool) to establish a `MISSION.md`, curate `RESOURCES.md`, and progressively build interactive lessons backed by verified, runnable code.
 
@@ -105,6 +105,16 @@ npx skills add domesticmouse/skills/packs/egui
 - **[`egui-command-engine`](packs/egui/egui-command-engine/SKILL.md):** Three-tier command taxonomy (Engine `CommandSpec`s, Shell/Tool UI commands, and CLI/JSON-RPC/MCP/TCP transports), declarative menu wiring, schema-driven `egui` dialogs, and adversarial input validation.
 - **[`egui-cow-document-model`](packs/egui/egui-cow-document-model/SKILL.md):** Pure serializable `L1` domain models, sparse `Arc` copy-on-write chunk/tile storage with fallible allocation, zero-copy snapshot undo/redo history with selection target restoration, and compile-time complete content-addressed persistence (`blake3` + Zstandard).
 - **[`egui-testing-infrastructure`](packs/egui/egui-testing-infrastructure/SKILL.md):** 7-tier verification architecture covering `cargo-mutants` mutation testing, `egui_kittest` headless UI harnesses, GPU test serialization (`gpu_lock`), pinned real-file corpus oracles, `panic_hunt` command fuzzing, performance budgets (`xtask perf`), and self-auditing scorecards (`xtask scorecard`).
+
+### [`packs/gpui`](packs/gpui) — Rust `gpui-kit` Desktop Application Pack
+
+Verified patterns and component workflows for building native Rust desktop applications with `gpui-kit` and GPUI:
+
+```bash
+npx skills add domesticmouse/skills/packs/gpui
+```
+
+- **[`gpui-kit`](packs/gpui/gpui-kit/SKILL.md):** Window bootstrapping (`Root` and notification toasts), headless-testable view constructors, controlled `Input`/`Textarea`/`Editor` states, live `TextView::markdown` task-list toggling via `WeakEntity`, `h_resizable` split panes, segmented `TabBar`s, and typed keyboard action dispatch.
 
 ### [`packs/hardware`](packs/hardware) — Embedded & Hardware Development Pack
 

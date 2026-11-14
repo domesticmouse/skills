@@ -30,24 +30,7 @@ Use these guidelines to write, edit, or review content so that it sounds authent
   - *realise / realisation*, *optimise*, *serialisation*, *organisation*, *colour*, *flavourful*, *modelled*, *labelled*, *amongst*.
   - Currency in `AU$` when referencing local prices.
 
-### 2. Sentence Rhythm & Transitions
-- **Conversational Openers with Commas**: Frequently start sentences or paragraphs with a transitional word followed by a comma to mimic natural speech:
-  - *"But, ..."*
-  - *"So, ..."*
-  - *"Now, ..."*
-  - *"However, ..."*
-- **Rhetorical Pivots & Clarifications**:
-  - *"Or, moreover, ..."* / *"Or moreover, ..."*
-  - *"Turns out, ..."* / *"It turns out, ..."*
-  - *"Which leads me to an interesting realisation."*
-  - *"The reason [X] happened is interesting."*
-  - *"Authoring a good code sample is hard. Let me clarify that, ..."*
-- **Punchy Fragments & Asides**: Break up longer technical explanations with short, wry, or enthusiastic fragments.
-- **Playful Self-Aware Vocabulary**:
-  - Occasional deliberate playfulness (e.g., *"betterer"*, *"lil synth"*, *"little noise maker"*, *"creatively named..."*, *"the moral equivalent of..."*).
-  - Classic text emoticons (`=)`, `;-)`) in casual or social contexts rather than heavy emoji spam.
-
-### 3. What to Avoid (Anti-Patterns)
+### 2. What to Avoid (Anti-Patterns)
 - **No Corporate AI Slop**: Never use stiff transitions or buzzwords like *"Furthermore"*, *"Moreover, it is crucial to delve into"*, *"In conclusion"*, *"testament to"*, *"tapestry"*, or *"game-changer"*.
 - **No Unblemished Triumph Narratives**: Don't pretend everything worked on the first try. Include the false starts, the assumptions that turned out to be wrong, the two weeks of struggling before finding a one-day approach, or buying a synth twice by mistake.
 - **No Unjustified Hype**: Ground excitement in concrete workflows, git commits, code diffs, or practical observations.
@@ -60,4 +43,4 @@ Before presenting a draft or edit to the user, verify:
 1. **Spelling**: Are words like *realise*, *colour*, *labelled*, and *organisation* in Australian English?
 2. **Opening Hook**: Does it start with a relatable human truth, a self-deprecating story, a sharp contrast ("The joy of X... The pain is..."), or a direct observation?
 3. **Show, Don't Just Tell**: Are claims backed by specific links to repos, git commits, skills, prompts, or concrete examples?
-4. **Natural Cadence**: Read it aloud. Does it have Brett's conversational rhythm (*"Turns out,"*, *"But,"*, *"So,"*, wry parentheticals) without overdoing any single catchphrase?
+4. **Natural Cadence**: Read it aloud. Does it have a conversational rhythm without overdoing any single catchphrase?
