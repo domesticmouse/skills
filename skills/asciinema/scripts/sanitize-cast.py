@@ -11,7 +11,11 @@ Removes sensitive data risks:
 
 import argparse
 import json
+import re
 import sys
+
+
+OSC_CONTEXT_RE = re.compile(r"\x1b\](?:3008|7);[^\x07\x1b]*(?:\x07|\x1b\\)")
 
 
 def parse_args():
@@ -50,6 +54,11 @@ def parse_args():
         action="store_true",
         help="Preserve all environment variables in the header without scrubbing",
     )
+    parser.add_argument(
+        "--keep-osc",
+        action="store_true",
+        help="Do not strip Linux/systemd OSC 3008 and OSC 7 host/session metadata sequences from stdout",
+    )
     return parser.parse_args()
 
 
@@ -75,8 +84,16 @@ def load_redact_patterns(cli_patterns, file_path):
     return patterns
 
 
-def sanitize(input_path, output_path, redact_map, strip_stdin=True, scrub_env=True):
+def sanitize(
+    input_path,
+    output_path,
+    redact_map,
+    strip_stdin=True,
+    scrub_env=True,
+    strip_osc=True,
+):
     stripped_stdin_count = 0
+    stripped_osc_count = 0
     redacted_occurrences = 0
 
     with (
@@ -135,13 +152,17 @@ def sanitize(input_path, output_path, redact_map, strip_stdin=True, scrub_env=Tr
                 stripped_stdin_count += 1
                 continue
 
-            # Redact patterns in stdout data
-            if event_type == "o" and isinstance(event_data, str) and redact_map:
-                for target, replacement in redact_map.items():
-                    if target in event_data:
-                        count = event_data.count(target)
-                        redacted_occurrences += count
-                        event_data = event_data.replace(target, replacement)
+            # Strip Linux/systemd OSC 3008/7 metadata and redact patterns in stdout data
+            if event_type == "o" and isinstance(event_data, str):
+                if strip_osc:
+                    event_data, osc_n = OSC_CONTEXT_RE.subn("", event_data)
+                    stripped_osc_count += osc_n
+                if redact_map:
+                    for target, replacement in redact_map.items():
+                        if target in event_data:
+                            count = event_data.count(target)
+                            redacted_occurrences += count
+                            event_data = event_data.replace(target, replacement)
                 event[2] = event_data
 
             outfile.write(json.dumps(event) + "\n")
@@ -149,6 +170,7 @@ def sanitize(input_path, output_path, redact_map, strip_stdin=True, scrub_env=Tr
     print(
         f"Sanitization complete: {output_path}\n"
         f"  - Stdin ('i') events stripped: {stripped_stdin_count}\n"
+        f"  - OSC 3008/7 metadata sequences stripped: {stripped_osc_count}\n"
         f"  - Secret pattern replacements: {redacted_occurrences}"
     )
 
@@ -162,6 +184,7 @@ def main():
         redact_map,
         strip_stdin=not args.keep_stdin,
         scrub_env=not args.keep_env,
+        strip_osc=not args.keep_osc,
     )
 
 

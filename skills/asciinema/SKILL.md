@@ -109,8 +109,12 @@ agg --theme monokai --fps-cap 15 --speed 1.5 --idle-time-limit 2 session.cast de
 - `--last-frame-duration <sec>`: Pause on final frame before loop (default `3.0`).
 
 #### B. Vector / SVG Export
-- **Self-contained animated SVG**:
+- **Self-contained animated SVG** (`svg-term` only parses `asciicast v1`/`v2`, so `asciinema` 3.x recordings must be converted to `asciicast-v2` first):
   ```bash
+  # asciinema 3.x (v3 default): convert to v2 on stdout and pipe to svg-term
+  asciinema convert -f asciicast-v2 session.cast - | svg-term --out demo.svg --window --width 80 --height 24
+
+  # If session.cast is already asciicast v2:
   cat session.cast | svg-term --out demo.svg --window --width 80 --height 24
   ```
 - **asciinema.org SVG Badge** (Safe for GitHub READMEs):
@@ -126,7 +130,8 @@ Before publishing or sharing `.cast` files, strip secrets and credential keystro
 
 1. **Verify stdin is stripped**: Default recordings do not capture keystrokes, but if `-I`/`--stdin` was used, `"i"` events must be deleted.
 2. **Scrub Environment Metadata**: Verify `env` in header line 1 contains only safe values (`TERM`, `SHELL`).
-3. **Redact Output Patterns**: Replace API keys, tokens, or internal URLs in `"o"` events.
+3. **Strip Linux/systemd OSC Metadata**: `sanitize-cast.py` strips Linux/systemd `OSC 3008` (`machineid`, `bootid`, `user`, `hostname`, `cwd`) and `OSC 7` escape sequences from `"o"` stdout events by default (pass `--keep-osc` to preserve them).
+4. **Redact Output Patterns**: Replace API keys, tokens, or internal URLs in `"o"` events.
 
 Use the bundled utility script [scripts/sanitize-cast.py](scripts/sanitize-cast.py):
 
@@ -193,9 +198,9 @@ Prints every `"m"` event with its 1-based `[N]` index, 0-based event `#idx`, `ra
 
 #### B. Search Output & Inspect Event Boundaries
 Before placing or moving a stop point, locate the exact stdout (`"o"`) event index. Both `--search` and `--inspect` annotate stdout events with diagnostic tags so shell paste/redraw phases are visible at a glance:
-- **`[REV]`**: Bracketed-paste echo in reverse video (`\x1b[7m...`).
-- **`[UNREV]`**: `Enter` key redraw that strips reverse video (`\x1b[A...\x1b[27m...`).
-- **`[OSC]`**: Pre-exec OSC window title (`\x1b]2;<cmd>\x07`) emitted immediately before command stdout starts.
+- **`[REV]`**: Bracketed-paste echo in reverse video (`\x1b[7m...\x1b[27m` in `bash`, `\x1b[7m...` in `zsh`).
+- **`[UNREV]`**: `Enter` key redraw that strips reverse video (`\x08+...<cmd>\r\n\x1b[?2004l` in `bash` Readline; `\x1b[A...\x1b[27m...\x1b[1B\r\x1b[K` in `zsh`).
+- **`[OSC]`**: Prompt/pre-exec OSC metadata (`\x1b]0;`, `\x1b]2;`, `\x1b]7;`, and Linux systemd `\x1b]3008;`).
 
 ```bash
 # Search stdout for a pattern and show 2 surrounding events before/after each match
@@ -207,7 +212,7 @@ python3 .agents/skills/asciinema/scripts/mark-cast.py session.cast --inspect 0:2
 
 #### C. Placement Rules: Command-Entry Hold vs. Command-Completion Hold vs. Two-Stop Prompt/Question Hold
 Always place `"m"` markers (`[0.0, "m", "<label>"]` in v3, `[abs_time, "m", "<label>"]` in v2) **immediately after** the `"o"` stdout event that finishes drawing the target frame (default behavior of `mark-cast.py`):
-- **Command-Entry Hold (pause after a shell command or TUI launcher is typed/pasted and reverse video is cleared, with the cursor still on the command line, *before* command output or TUI startup)**: Match the command text itself (e.g. `flutter create --platforms=ios my_app`, `git init && git add . && git commit -m "Initial scaffold"`, or `agy`—not the post-launch `Antigravity CLI` welcome banner). In `zsh` with bracketed paste (`\x1b[?2004h`), pasting and running a command emits `[REV]` (reverse-video paste) → `[UNREV]` (`Enter` redraw removing reverse video `\x1b[A...\x1b[27m...` plus a trailing cursor-down `\x1b[1B\r\x1b[K`) → mode resets (`\x1b>`, `\x1b[?2004l\r\r\n`) → `[OSC]` (`preexec` title `2;<cmd>`). By default, `mark-cast.py` advances from `[REV]` to `[UNREV]` and splits any trailing `\x1b[1B\r\x1b[K` cursor-down sequence into a follow-up `"o"` event (`dt=0.02s`) after the marker. Giving the split post-marker `"o"` event a positive `dt` (`0.02s`) ensures its `asciicast-v2` timestamp is strictly greater than the marker timestamp `T_m`, preventing `asciinema-player` (`pauseOnMarkers` or `player.seek(T_m)`) from executing the cursor-down sequence while paused at the stop point (pass `--raw-match` only if you explicitly want the raw `[REV]` paste frame).
+- **Command-Entry Hold (pause after a shell command or TUI launcher is typed/pasted and reverse video is cleared, with the cursor still on the command line, *before* command output or TUI startup)**: Match the command text itself (e.g. `flutter create --platforms=ios my_app`, `git init && git add . && git commit -m "Initial scaffold"`, or `agy`—not the post-launch `Antigravity CLI` welcome banner). With bracketed paste (`\x1b[?2004h`), pasting and running a command emits `[REV]` (reverse-video paste: `\x1b[7m...\x1b[27m` in `bash`, `\x1b[7m...` in `zsh`) → `[UNREV]` (`Enter` redraw clearing reverse video: `\x08+...<cmd>\r\n\x1b[?2004l\r...` in `bash` Readline, or `\x1b[A...\x1b[27m...` plus `\x1b[1B\r\x1b[K` in `zsh`) → `[OSC]` (`3008`/`2` shell/command metadata). By default, `mark-cast.py` advances from `[REV]` to `[UNREV]` and splits trailing `\r\n\x1b[?2004l\r...` (`bash`) or `\x1b[1B\r\x1b[K` (`zsh`) into a post-marker `"o"` event (`dt=0.02s`). Giving the split post-marker `"o"` event a positive `dt` (`0.02s`) ensures its `asciicast-v2` timestamp is strictly greater than the marker timestamp `T_m`, preventing `asciinema-player` (`pauseOnMarkers` or `player.seek(T_m)`) from executing the newline/cursor-down sequence while paused at the stop point (pass `--raw-match` only if you explicitly want the raw `[REV]` paste frame).
 - **Command-Completion / `/clear` Hold (pause *after* a command or `/clear` finishes running)**: Match the final stdout frame of the command's output (e.g. `"All done!"`, `"root-commit.*Initial scaffold"`, or the fresh `Antigravity CLI` banner redraw after `/clear`).
 - **Two-Stop Interactive Prompt / Question Hold (Before Typing + After Typing Before `Enter`)**:
   1. **Stop 1 — Before Typing (`Q: ...` / `Ready for ...`)**: Match the bottom status/footer of the TUI prompt frame (whether an `ask_user` selector widget with `enter Submit`/`enter Select` or a prose question ending with `? for shortcuts`), right before the first typed/pasted character of the user's response (`dt > 0`).
@@ -254,7 +259,7 @@ python3 .agents/skills/asciinema/scripts/mark-cast.py session.cast \
   --in-place --embed-html player.html
 ```
 
-- **Checkable Completion Criterion**: Run `python3 .agents/skills/asciinema/scripts/mark-cast.py <file> --list` and `--inspect <idx>` around modified markers to confirm every command-entry marker sits immediately after `[UNREV]` (reverse video cleared, cursor on the same line as the command) and before the split `\x1b[1B\r\x1b[K` cursor-down and command output frames.
+- **Checkable Completion Criterion**: Run `python3 .agents/skills/asciinema/scripts/mark-cast.py <file> --list` and `--inspect <idx>` around modified markers to confirm every command-entry marker sits immediately after `[UNREV]` (reverse video cleared, cursor on the same line as the command) and before the split `\r\n\x1b[?2004l...` (`bash`) or `\x1b[1B\r\x1b[K` (`zsh`) newline/cursor-down and command output frames.
 - **Standalone HTML Cast Players (`*-cast-player.html`)**: When editing, reviewing, or scaffolding standalone HTML cast-player harnesses, read [`../cast-player-html/SKILL.md`](../cast-player-html/SKILL.md).
 
 ---

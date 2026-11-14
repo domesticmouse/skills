@@ -82,11 +82,28 @@ def strip_ansi(text: str) -> str:
     return ANSI_ESCAPE_RE.sub("", text)
 
 
+UNREV_CURSOR_DOWN_RE = re.compile(r"(\x1b\[\d*B\r\x1b\[K)$")
+BASH_UNREV_SPLIT_RE = re.compile(
+    r"^((?:\x08+|\r(?:\x1b\[\d*[A-D])*|\x1b\[\d*[A-D])+(?:\x1b\[27m)*[^\x00-\x1f\x7f](?:(?!\x1b\[\?2004l\r)[^\r\n])*)((?:\x1b\[\?2004l)?\r+\n[\s\S]*)$"
+)
+BASH_UNREV_ALREADY_SPLIT_RE = re.compile(
+    r"^(?:\x08+|\r(?:\x1b\[\d*[A-D])*|\x1b\[\d*[A-D])+(?:\x1b\[27m)*[^\x00-\x1f\x7f][^\r\n]*$"
+)
+
+
+def is_bash_unrev_payload(s: str, prev_is_rev: bool = False) -> bool:
+    if BASH_UNREV_SPLIT_RE.match(s) and ("\x1b[?2004l" in s or prev_is_rev):
+        return True
+    if prev_is_rev and BASH_UNREV_ALREADY_SPLIT_RE.match(s):
+        return True
+    return False
+
+
 def describe_ansi_tags(code: str, data: Any) -> str:
     """
     Return compact diagnostic tags for stdout ('o') events so --inspect and --search
     distinguish bracketed-paste reverse video ([REV]), Enter un-reverse redraw
-    ([UNREV]), and preexec OSC title ([OSC]).
+    ([UNREV]), and prompt/preexec OSC metadata ([OSC]).
     """
     if code != "o":
         return ""
@@ -94,14 +111,15 @@ def describe_ansi_tags(code: str, data: Any) -> str:
     tags: list[str] = []
     if "\x1b[7m" in s and not s.startswith("\x1b[1m\x1b[7m%\x1b[27m"):
         tags.append("REV")
-    elif "\x1b[27m" in s and "\x1b[A" in s:
+    elif ("\x1b[27m" in s and "\x1b[A" in s) or is_bash_unrev_payload(
+        s,
+        prev_is_rev=s.startswith("\x08\x08")
+        or ("\x1b[27m" in s and s.startswith("\x1b[")),
+    ):
         tags.append("UNREV")
-    if "\x1b]2;" in s:
+    if any(osc in s for osc in ("\x1b]0;", "\x1b]2;", "\x1b]7;", "\x1b]3008;")):
         tags.append("OSC")
     return f"[{','.join(tags)}] " if tags else ""
-
-
-UNREV_CURSOR_DOWN_RE = re.compile(r"(\x1b\[\d*B\r\x1b\[K)$")
 
 
 def advance_past_paste_redraw(
@@ -109,14 +127,15 @@ def advance_past_paste_redraw(
 ) -> int:
     """
     When a stdout pattern matches a shell bracketed-paste frame in reverse video
-    (\\x1b[7m) or its immediate Enter un-reverse redraw (\\x1b[27m):
+    (\\x1b[7m) or its immediate Enter un-reverse redraw (\\x1b[27m in zsh or
+    Readline backspace/redraw in bash):
       1. Advance from the [REV] paste frame to the [UNREV] redraw frame
-         (\\x1b[A...\\x1b[27m...).
+         (\\x1b[A...\\x1b[27m... in zsh, or \\x08+... in bash).
       2. If the [UNREV] frame ends with a cursor-down newline sequence
-         (\\x1b[1B\\r\\x1b[K), split that trailing cursor-down sequence into a
-         follow-up 'o' event (dt=0.02s) so that at the 'm' marker the command is
-         in normal video with the cursor still on the same line at the end of
-         the command.
+         (\\x1b[1B\\r\\x1b[K in zsh) or trailing newline/output (\\r\\n... in bash),
+         split that trailing sequence into a follow-up 'o' event (dt=0.02s) so
+         that at the 'm' marker the command is in normal video with the cursor
+         still on the same line at the end of the command.
     """
     if match_idx < 0 or match_idx >= len(events):
         return match_idx
@@ -128,7 +147,15 @@ def advance_past_paste_redraw(
     is_rev_paste = "\x1b[7m" in payload and not payload.startswith(
         "\x1b[1m\x1b[7m%\x1b[27m"
     )
-    is_unrev_redraw = "\x1b[27m" in payload and "\x1b[A" in payload
+    prev_is_rev = (
+        match_idx > 0
+        and len(events[match_idx - 1]) >= 3
+        and events[match_idx - 1][1] == "o"
+        and "\x1b[7m" in str(events[match_idx - 1][2])
+    )
+    is_unrev_redraw = (
+        "\x1b[27m" in payload and "\x1b[A" in payload
+    ) or is_bash_unrev_payload(payload, prev_is_rev=prev_is_rev)
     if not (is_rev_paste or is_unrev_redraw):
         idx = match_idx
         while idx + 1 < len(events):
@@ -150,18 +177,32 @@ def advance_past_paste_redraw(
     # Step 1: If matched on [REV] paste frame, advance to [UNREV] redraw frame
     if is_rev_paste and idx + 1 < len(events):
         next_ev = events[idx + 1]
-        if len(next_ev) >= 3 and next_ev[1] == "o" and "\x1b[27m" in str(next_ev[2]):
+        if (
+            len(next_ev) >= 3
+            and next_ev[1] == "o"
+            and (
+                "\x1b[27m" in str(next_ev[2])
+                or is_bash_unrev_payload(str(next_ev[2]), prev_is_rev=True)
+            )
+        ):
             idx += 1
 
-    # Step 2: If [UNREV] has a trailing cursor-down (\x1b[1B\r\x1b[K), split it
-    # into a separate 'o' event after the marker so cursor stays on command line.
+    # Step 2: If [UNREV] has a trailing cursor-down (\x1b[1B\r\x1b[K in zsh) or
+    # newline (\r\n... in bash), split it into a separate 'o' event after the
+    # marker so cursor stays on command line.
     unrev_ev = events[idx]
     if len(unrev_ev) >= 3 and unrev_ev[1] == "o":
         unrev_s = str(unrev_ev[2])
         m = UNREV_CURSOR_DOWN_RE.search(unrev_s)
+        m_bash = None if m else BASH_UNREV_SPLIT_RE.match(unrev_s)
+        split_parts: tuple[str, str] | None = None
         if m:
-            suffix = m.group(1)
-            unrev_ev[2] = unrev_s[: -len(suffix)]
+            split_parts = (unrev_s[: -len(m.group(1))], m.group(1))
+        elif m_bash:
+            split_parts = (m_bash.group(1), m_bash.group(2))
+        if split_parts is not None:
+            prefix, suffix = split_parts
+            unrev_ev[2] = prefix
             split_dt = 0.02
             if version == 3:
                 follow_time = split_dt
@@ -665,7 +706,15 @@ def tighten_paste_delays(
         )
 
         is_rev = "\x1b[7m" in s and not s.startswith("\x1b[1m\x1b[7m%\x1b[27m")
-        is_unrev = "\x1b[27m" in s and "\x1b[A" in s
+        prev_is_rev = (
+            idx > 0
+            and len(events[idx - 1]) >= 3
+            and events[idx - 1][1] == "o"
+            and "\x1b[7m" in str(events[idx - 1][2])
+        )
+        is_unrev = ("\x1b[27m" in s and "\x1b[A" in s) or is_bash_unrev_payload(
+            s, prev_is_rev=prev_is_rev
+        )
         next_is_marker = idx + 1 < len(events) and events[idx + 1][1] == "m"
         prev_is_marker = idx > 0 and events[idx - 1][1] == "m"
         prev_marker_label = (
