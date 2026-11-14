@@ -32,14 +32,6 @@ Discovers, lists, inspects, compares, audits, exports, and safely deletes Google
 
 **Intended Usage:** Ask the agent to list recent sessions, group or search sessions by project or prompt keyword, inspect step timelines and tool calls, export per-conversation Markdown logs (e.g., into a `prompts/` folder), compare two sessions side-by-side, or clean up old sessions (moving them to the macOS Trash by default).
 
-### [`asciinema`](skills/asciinema/SKILL.md)
-
-Records, replays, converts, sanitizes, trims, tightens paste/input delays, and manages `"m"` chapter markers (stop points) in terminal sessions using the asciinema ecosystem.
-
-**Origin:** Built with reference guides ([`FORMAT.md`](skills/asciinema/FORMAT.md), [`EMBEDDING.md`](skills/asciinema/EMBEDDING.md), [`SELF-HOSTING.md`](skills/asciinema/SELF-HOSTING.md)) and zero-dependency Python helper scripts ([`sanitize-cast.py`](skills/asciinema/scripts/sanitize-cast.py), [`trim-cast.py`](skills/asciinema/scripts/trim-cast.py), and [`mark-cast.py`](skills/asciinema/scripts/mark-cast.py)) to streamline preparing clean, chapter-indexed `.cast` recordings for documentation, slides, and web players.
-
-**Intended Usage:** Activated when recording terminal demos, converting `.cast` files to animated GIF (`agg`) or SVG (`svg-term`), stripping `stdin` keystrokes and redacting secrets, trimming trailing `Ctrl+D` exit sequences with a clean final-frame hold, adding/moving/inspecting `"m"` chapter stop points, shortening cut-and-paste pauses, or embedding `asciinema-player` in web apps.
-
 ### [`bjm-voice`](skills/bjm-voice/SKILL.md)
 
 Guides the agent in writing, editing, or reviewing blog posts, tutorials, articles, and social media updates in Brett Morgan's authentic writing voice.
@@ -47,14 +39,6 @@ Guides the agent in writing, editing, or reviewing blog posts, tutorials, articl
 **Origin:** Distilled from analysis of Brett's existing articles, technical write-ups, and social posts to capture recurring linguistic signatures, Australian English spelling, and conversational cadence.
 
 **Intended Usage:** Activated when drafting, editing, or reviewing blog posts, tutorials, articles, or social media updates that should sound like Brett.
-
-### [`cast-player-html`](skills/cast-player-html/SKILL.md)
-
-Scaffolds, edits, and manages standalone HTML `asciinema-player` harnesses (`*-cast-player.html`) with inline gzip+base64 `.cast` recordings (`EMBEDDED_CAST_GZ_B64`), adaptive per-segment playback speeds (`>= 2x`, `<= 30s` per segment), interactive chapter stepper pills, and stage hotkeys (`p`, `[`, `]`).
-
-**Origin:** Built around a self-contained 16:9 HTML template ([`cast-player-template.html`](skills/cast-player-html/resources/cast-player-template.html)) and paired with [`mark-cast.py --embed-html`](skills/asciinema/scripts/mark-cast.py) so terminal recordings can be opened directly over `file://` without CORS errors to test-drive and fine-tune stop points before syncing into a Slidev deck.
-
-**Intended Usage:** Activated when scaffolding a standalone HTML player prototype for a `.cast` recording, adding/moving/renaming stop points viewed in an HTML player, tightening cut-and-paste delays (`dt`), or tuning adaptive segment speeds and HUD controls.
 
 ### [`crop-image`](skills/crop-image/SKILL.md)
 
@@ -80,6 +64,8 @@ Scaffolds, authors, styles, previews, and deploys dark-theme [Slidev](https://sl
 
 **Intended Usage:** Activated when creating a new Slidev deck, authoring or refactoring slides and conversational presenter notes, embedding `.cast` terminal recordings or visual callouts, running the local Slidev dev server, or configuring GitHub Pages deployment.
 
+> **Recommended Companion Pack:** Pair with [`packs/asciinema`](#packsasciinema--terminal-recording--interactive-cast-player-pack) (`npx skills add domesticmouse/skills/packs/asciinema`) when recording, sanitizing, trimming, or chapter-marking `.cast` terminal sessions for Slidev.
+
 ### [`teach-code`](skills/teach-code/SKILL.md)
 
 An interactive, stateful code-teaching workflow that builds self-contained HTML lessons (compiled from Markdown via `build.py`), printable reference sheets, learning records, and runnable per-lesson companion projects in `apps/` verified with automated tests and linters.
@@ -91,6 +77,17 @@ An interactive, stateful code-teaching workflow that builds self-contained HTML 
 ## Skill Packs
 
 Skill packs live under [`packs/`](packs/) so they are excluded from default `npx skills add domesticmouse/skills` installs, while remaining installable as a group via subpath.
+
+### [`packs/asciinema`](packs/asciinema) — Terminal Recording & Interactive Cast Player Pack
+
+Skills and zero-dependency Python tooling for recording, sanitizing, trimming, chapter-marking, and test-driving interactive `asciinema` terminal sessions:
+
+```bash
+npx skills add domesticmouse/skills/packs/asciinema
+```
+
+- **[`asciinema`](packs/asciinema/asciinema/SKILL.md):** Records, replays, converts (`agg`, `svg-term`), sanitizes ([`sanitize-cast.py`](packs/asciinema/asciinema/scripts/sanitize-cast.py)), trims ([`trim-cast.py`](packs/asciinema/asciinema/scripts/trim-cast.py)), tightens paste/input delays, and manages `"m"` chapter stop points ([`mark-cast.py`](packs/asciinema/asciinema/scripts/mark-cast.py)) in `.cast` files (`v2` & `v3`), with reference guides ([`FORMAT.md`](packs/asciinema/asciinema/FORMAT.md), [`EMBEDDING.md`](packs/asciinema/asciinema/EMBEDDING.md), [`SELF-HOSTING.md`](packs/asciinema/asciinema/SELF-HOSTING.md)).
+- **[`cast-player-html`](packs/asciinema/cast-player-html/SKILL.md):** Scaffolds, edits, and manages standalone 16:9 HTML `asciinema-player` harnesses (`*-cast-player.html` from [`cast-player-template.html`](packs/asciinema/cast-player-html/resources/cast-player-template.html)) with inline gzip+base64 `.cast` recordings (`EMBEDDED_CAST_GZ_B64`), adaptive per-segment playback speeds (`>= 2x`, `<= 30s` per segment), interactive chapter stepper pills, and stage hotkeys (`p`, `[`, `]`).
 
 ### [`packs/egui`](packs/egui) — Engine-First Rust & `egui` Application Pack
 
