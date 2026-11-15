@@ -31,17 +31,28 @@ Capabilities:
     Enter highlight pauses ([UNREV] -> 0.15s), and prompt paste/submit delays.
 14. --embed-html HTML_PATH: Re-compress the saved .cast file (gzip+base64) into
     EMBEDDED_CAST_GZ_B64 inside HTML_PATH.
+15. --render EVENT_IDX: Render the 2D terminal screen and (cursor.y, cursor.x) at
+    one or more event indices using pyte (run via `uv run --with pyte`).
+16. --verify-strip START:END: Simulate the terminal screen with pyte across a
+    candidate cut START:END, comparing cursor coordinates (y, x) at START - 1
+    vs. END and checking post-cut frames (END + 1 onwards) for scrollback redraws.
+17. --strip-range START:END: Excise events in inclusive 0-based range START:END
+    (shifting subsequent timestamps in asciicast v2 and preserving relative dt
+    in asciicast v3).
 """
+
+from __future__ import annotations
 
 import argparse
 import base64
 import gzip
+import itertools
 import json
 import math
 import re
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 
 def load_auto_spec(spec_path: str) -> list[tuple[str, re.Pattern[str]]]:
@@ -53,7 +64,7 @@ def load_auto_spec(spec_path: str) -> list[tuple[str, re.Pattern[str]]]:
     """
     data = json.loads(Path(spec_path).read_text(encoding="utf-8"))
     if not isinstance(data, list):
-        raise ValueError(
+        raise TypeError(
             f"Expected a JSON list in {spec_path}, got {type(data).__name__}"
         )
     specs: list[tuple[str, re.Pattern[str]]] = []
@@ -98,9 +109,7 @@ def is_rev_paste_payload(s: str) -> bool:
 def is_bash_unrev_payload(s: str, prev_is_rev: bool = False) -> bool:
     if BASH_UNREV_SPLIT_RE.match(s) and ("\x1b[?2004l" in s or prev_is_rev):
         return True
-    if prev_is_rev and BASH_UNREV_ALREADY_SPLIT_RE.match(s):
-        return True
-    return False
+    return bool(prev_is_rev and BASH_UNREV_ALREADY_SPLIT_RE.match(s))
 
 
 def _prev_event_is_rev(events: list[list[Any]], idx: int) -> bool:
@@ -122,9 +131,7 @@ def _prev_timing_is_rev(
     )
 
 
-def describe_ansi_tags(
-    code: str, data: Any, prev_is_rev: bool | None = None
-) -> str:
+def describe_ansi_tags(code: str, data: Any, prev_is_rev: bool | None = None) -> str:
     """
     Return compact diagnostic tags for stdout ('o') events so --inspect and --search
     distinguish bracketed-paste reverse video ([REV]), Enter un-reverse redraw
@@ -802,6 +809,404 @@ def save_cast(path: str, header: dict[str, Any], events: list[list[Any]]) -> Non
         f.writelines(json.dumps(ev, ensure_ascii=False) + "\n" for ev in events)
 
 
+def _require_pyte() -> Any:
+    try:
+        import pyte  # type: ignore[import-not-found]
+    except ImportError:
+        sys.stderr.write(
+            "Error: 'pyte' is required for terminal screen emulation. Run with:\n"
+            "  uv run --with pyte python3 .agents/skills/asciinema/scripts/mark-cast.py ...\n"
+        )
+        sys.exit(1)
+    return pyte
+
+
+def _cast_dimensions(header: dict[str, Any]) -> tuple[int, int]:
+    term = header.get("term")
+    if isinstance(term, dict):
+        cols = int(term.get("cols") or 120)
+        rows = int(term.get("rows") or 36)
+        return cols, rows
+    cols = int(header.get("width") or 120)
+    rows = int(header.get("height") or 36)
+    return cols, rows
+
+
+def _parse_range_spec(spec: str, total_events: int) -> tuple[int, int]:
+    if ":" not in spec:
+        raise ValueError(f"Expected START:END range, got {spec!r}")
+    start_s, end_s = spec.split(":", 1)
+    if not start_s.strip().isdigit() or not end_s.strip().isdigit():
+        raise ValueError(f"Expected integer START:END range, got {spec!r}")
+    start_idx = int(start_s.strip())
+    end_idx = int(end_s.strip())
+    if not (0 <= start_idx <= end_idx < total_events):
+        raise ValueError(
+            f"Range {start_idx}:{end_idx} out of bounds (0..{total_events - 1})"
+        )
+    return start_idx, end_idx
+
+
+OSC_COMPLETE_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+DECST8C_RE = re.compile(r"\x1b\[\?5W")
+
+
+def _strip_osc_chunk(text: str, state: dict[str, bool]) -> str:
+    """
+    Strip OSC sequences (\\x1b]...\\x07 or \\x1b]...\\x1b\\\\) across chunk
+    boundaries so split OSC 8 hyperlinks never leak path tails into pyte.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(text)
+
+    if state["pending_esc"]:
+        state["pending_esc"] = False
+        if state["in_osc"]:
+            if text.startswith("\\"):
+                state["in_osc"] = False
+                i = 1
+        elif text.startswith("]"):
+            state["in_osc"] = True
+            i = 1
+        else:
+            out.append("\x1b")
+
+    while i < n:
+        if state["in_osc"]:
+            bel = text.find("\x07", i)
+            esc = text.find("\x1b", i)
+            if bel == -1 and esc == -1:
+                break
+            if bel != -1 and (esc == -1 or bel < esc):
+                state["in_osc"] = False
+                i = bel + 1
+            else:
+                if esc + 1 >= n:
+                    state["pending_esc"] = True
+                    break
+                if text[esc + 1] == "\\":
+                    state["in_osc"] = False
+                    i = esc + 2
+                elif text[esc + 1] == "]":
+                    i = esc + 2
+                else:
+                    i = esc + 1
+        else:
+            esc = text.find("\x1b", i)
+            if esc == -1:
+                out.append(text[i:])
+                break
+            if esc > i:
+                out.append(text[i:esc])
+            if esc + 1 >= n:
+                state["pending_esc"] = True
+                break
+            if text[esc + 1] == "]":
+                state["in_osc"] = True
+                i = esc + 2
+            else:
+                out.append("\x1b")
+                i = esc + 1
+
+    return "".join(out)
+
+
+def _preprocess_for_pyte(text: str, osc_state: dict[str, bool] | None = None) -> str:
+    """
+    Normalize OSC sequences and DECST8C (\\x1b[?5W) before feeding pyte.Stream.
+    """
+    if osc_state is not None:
+        cleaned = _strip_osc_chunk(text, osc_state)
+    else:
+        cleaned = OSC_COMPLETE_RE.sub("", text)
+    # Rewrite DECST8C (\x1b[?5W) to an unused non-private W parameter because pyte
+    # ignores or omits private=True on non-h/l CSI sequences.
+    return DECST8C_RE.sub("\x1b[1005W", cleaned)
+
+
+def _make_ghostty_emulator(pyte: Any, cols: int, rows: int) -> tuple[Any, Any]:
+    """
+    Create a (screen, stream) pair subclassing pyte.Screen and pyte.Stream
+    with ECMA-48 CBT (Z), REP (b), and DECST8C (?5W) support for xterm-ghostty.
+    """
+
+    class GhosttyScreen(pyte.Screen):
+        def __init__(self, columns: int, lines: int) -> None:
+            super().__init__(columns, lines)
+            self._last_drawn_char = " "
+
+        def draw(self, data: str) -> None:
+            if data:
+                self._last_drawn_char = data[-1]
+            super().draw(data)
+
+        def cursor_backward_tab(self, count: int = 1) -> None:
+            steps = count or 1
+            stops = sorted(self.tabstops)
+            x = self.cursor.x
+            for _ in range(steps):
+                prev = [s for s in stops if s < x]
+                x = prev[-1] if prev else 0
+            self.cursor.x = x
+
+        def repeat_char(self, count: int = 1) -> None:
+            repeats = count or 1
+            if self._last_drawn_char:
+                super().draw(self._last_drawn_char * repeats)
+
+        def handle_tab_control(self, *args: int, private: bool = False) -> None:
+            if (private and args == (5,)) or args == (1005,):
+                self.tabstops = set(range(8, self.columns, 8))
+
+    class GhosttyStream(pyte.Stream):
+        csi: ClassVar[dict[str, str]] = dict(
+            pyte.Stream.csi,
+            Z="cursor_backward_tab",
+            b="repeat_char",
+            W="handle_tab_control",
+        )
+
+    screen = GhosttyScreen(cols, rows)
+    stream = GhosttyStream(screen)
+    return screen, stream
+
+
+def simulate_screen_at_events(
+    header: dict[str, Any],
+    events: list[list[Any]],
+    target_indices: list[int],
+    skip_ranges: list[tuple[int, int]] | None = None,
+) -> dict[int, tuple[int, int, list[str]]]:
+    """
+    Simulate the terminal screen up to max(target_indices) and return
+    {idx: (cursor.y, cursor.x, display_lines)} for every index in target_indices.
+    Supports idx == -1 for the initial empty screen state.
+    """
+    pyte = _require_pyte()
+    cols, rows = _cast_dimensions(header)
+    screen, stream = _make_ghostty_emulator(pyte, cols, rows)
+    osc_state = {"in_osc": False, "pending_esc": False}
+
+    results: dict[int, tuple[int, int, list[str]]] = {}
+    targets = set(target_indices)
+    if -1 in targets:
+        results[-1] = (0, 0, [""] * rows)
+    positive_targets = [idx for idx in targets if idx >= 0]
+    if not positive_targets:
+        return results
+
+    max_target = max(positive_targets)
+    skips = skip_ranges or []
+
+    for idx, ev in enumerate(events):
+        if idx > max_target:
+            break
+        if any(s <= idx <= e for s, e in skips):
+            continue
+        if len(ev) >= 3:
+            code = ev[1]
+            data = ev[2]
+            if code == "o" and isinstance(data, str):
+                cleaned = _preprocess_for_pyte(data, osc_state=osc_state)
+                if cleaned:
+                    stream.feed(cleaned)
+            elif code == "r" and isinstance(data, str) and "x" in data:
+                c_str, r_str = data.split("x", 1)
+                if c_str.isdigit() and r_str.isdigit():
+                    screen.resize(lines=int(r_str), columns=int(c_str))
+        if idx in targets:
+            results[idx] = (
+                screen.cursor.y,
+                screen.cursor.x,
+                [line.rstrip() for line in screen.display],
+            )
+    return results
+
+
+def render_events(
+    header: dict[str, Any], events: list[list[Any]], specs: list[str]
+) -> None:
+    indices: list[int] = []
+    for raw in specs:
+        if not raw.strip().isdigit():
+            raise ValueError(f"Invalid --render event index: {raw!r}")
+        idx = int(raw.strip())
+        if not (0 <= idx < len(events)):
+            raise ValueError(
+                f"--render event #{idx} out of range (0..{len(events) - 1})"
+            )
+        indices.append(idx)
+
+    snapshots = simulate_screen_at_events(header, events, indices)
+    for idx in indices:
+        y, x, disp = snapshots[idx]
+        print(f"=== Event #{idx:04d} (cursor y={y}, x={x}) ===")
+        for row_idx, line in enumerate(disp):
+            print(f"{row_idx:02d}: {line}")
+
+
+def _next_sync_frame_end(
+    events: list[list[Any]], version: int, after_idx: int
+) -> int | None:
+    start: int | None = None
+    for idx in range(after_idx + 1, len(events)):
+        ev = events[idx]
+        if len(ev) >= 3 and ev[1] == "o":
+            start = idx
+            break
+    if start is None:
+        return None
+
+    end_idx = start
+    first_payload = str(events[start][2])
+    in_sync = "\x1b[?2026h" in first_payload and "\x1b[?2026l" not in first_payload
+    prev_abs = float(events[start][0]) if version != 3 else 0.0
+
+    for idx in range(start + 1, len(events)):
+        ev = events[idx]
+        if len(ev) < 3 or ev[1] != "o":
+            if in_sync:
+                continue
+            break
+        dt = float(ev[0]) if version == 3 else max(0.0, float(ev[0]) - prev_abs)
+        if version != 3:
+            prev_abs = float(ev[0])
+        if dt > 0.0 and not in_sync:
+            break
+        end_idx = idx
+        payload = str(ev[2])
+        if "\x1b[?2026h" in payload:
+            in_sync = True
+        if "\x1b[?2026l" in payload:
+            in_sync = False
+    return end_idx
+
+
+def verify_strip_range(
+    header: dict[str, Any],
+    events: list[list[Any]],
+    version: int,
+    spec: str,
+) -> None:
+    start_idx, end_idx = _parse_range_spec(spec, len(events))
+    before_idx = start_idx - 1
+    next_end_idx = _next_sync_frame_end(events, version, end_idx)
+
+    timings = compute_timings(header, events, version)
+    before_raw = timings[before_idx][2] if before_idx >= 0 else 0.0
+    end_raw = timings[end_idx][2]
+    cut_raw = max(0.0, end_raw - before_raw)
+    removed_markers = [
+        (idx, str(ev[2]) if len(ev) > 2 else "")
+        for idx, ev in enumerate(events[start_idx : end_idx + 1], start=start_idx)
+        if len(ev) >= 2 and ev[1] == "m"
+    ]
+
+    orig_targets = [before_idx, end_idx]
+    if next_end_idx is not None:
+        orig_targets.append(next_end_idx)
+    orig_snaps = simulate_screen_at_events(header, events, orig_targets)
+
+    y_before, x_before, disp_before = orig_snaps[before_idx]
+    y_end, x_end, disp_end = orig_snaps[end_idx]
+    cursor_match = (y_before, x_before) == (y_end, x_end)
+
+    print(
+        f"Verify Strip #{start_idx:04d}..#{end_idx:04d} "
+        f"({end_idx - start_idx + 1} events, raw={cut_raw:.2f}s)"
+    )
+    if removed_markers:
+        marker_desc = ", ".join(f"#{idx:04d} {lbl!r}" for idx, lbl in removed_markers)
+        print(f"  Markers inside range: {marker_desc}")
+    else:
+        print("  Markers inside range: (none)")
+    print(
+        f"  Cursor at #{before_idx if before_idx >= 0 else -1}: (y={y_before}, x={x_before}) "
+        f"vs #{end_idx}: (y={y_end}, x={x_end}) -> "
+        f"{'MATCH' if cursor_match else 'MISMATCH'}"
+    )
+
+    if next_end_idx is None:
+        print("  Post-cut frame: (no stdout events after excised range)")
+        return
+
+    cut_snaps = simulate_screen_at_events(
+        header, events, [next_end_idx], skip_ranges=[(start_idx, end_idx)]
+    )
+    y_next_orig, x_next_orig, disp_next_orig = orig_snaps[next_end_idx]
+    y_next_cut, x_next_cut, disp_next_cut = cut_snaps[next_end_idx]
+
+    cursor_next_ok = (y_next_orig, x_next_orig) == (y_next_cut, x_next_cut)
+    screen_next_ok = disp_next_orig == disp_next_cut
+    print(
+        f"  Post-cut frame #{next_end_idx:04d}: "
+        f"cursor orig=(y={y_next_orig}, x={x_next_orig}) "
+        f"cut=(y={y_next_cut}, x={x_next_cut}) -> "
+        f"{'MATCH' if cursor_next_ok else 'MISMATCH'}; "
+        f"display={'IDENTICAL' if screen_next_ok else 'DIFFERS'}"
+    )
+    if not screen_next_ok:
+        diff_rows = [
+            r
+            for r in range(min(len(disp_next_orig), len(disp_next_cut)))
+            if disp_next_orig[r] != disp_next_cut[r]
+        ]
+        print(f"  Post-cut display diff rows (orig vs cut): {diff_rows}")
+
+    before_lines = {line for line in disp_before if line}
+    excised_lines = {line for line in disp_end if line} - before_lines
+    leaked_rows = [
+        (r, line)
+        for r, line in enumerate(disp_next_cut)
+        if line and line in excised_lines
+    ]
+    if leaked_rows:
+        print(
+            f"  Scrollback notice: {len(leaked_rows)} row(s) in post-cut frame "
+            f"#{next_end_idx:04d} explicitly redraw text from inside #{start_idx}..#{end_idx}:"
+        )
+        for r, line in leaked_rows[:8]:
+            print(f"    row {r:02d}: {line[:90]!r}")
+        if len(leaked_rows) > 8:
+            print(f"    ... (+{len(leaked_rows) - 8} more rows)")
+    else:
+        print(
+            f"  Scrollback check: no excised lines redrawn in post-cut frame #{next_end_idx:04d}"
+        )
+
+
+def strip_event_range(
+    events: list[list[Any]], version: int, start_idx: int, end_idx: int
+) -> tuple[list[list[Any]], int, list[str], float]:
+    """
+    Remove events in inclusive 0-based range [start_idx, end_idx].
+    Preserves relative deltas in v3 and shifts subsequent timestamps in v2.
+    """
+    if not (0 <= start_idx <= end_idx < len(events)):
+        raise ValueError(
+            f"Range {start_idx}:{end_idx} out of bounds (0..{len(events) - 1})"
+        )
+    removed_events = events[start_idx : end_idx + 1]
+    removed_markers = [
+        str(ev[2]) if len(ev) > 2 else ""
+        for ev in removed_events
+        if len(ev) >= 2 and ev[1] == "m"
+    ]
+    if version == 3:
+        cut_raw = sum(float(ev[0]) for ev in removed_events)
+        updated = events[:start_idx] + events[end_idx + 1 :]
+    else:
+        prev_abs = float(events[start_idx - 1][0]) if start_idx > 0 else 0.0
+        end_abs = float(events[end_idx][0])
+        cut_raw = max(0.0, end_abs - prev_abs)
+        updated = events[:start_idx] + [
+            [round(max(0.0, float(ev[0]) - cut_raw), 6), *ev[1:]]
+            for ev in events[end_idx + 1 :]
+        ]
+    return updated, len(removed_events), removed_markers, cut_raw
+
+
 def embed_cast_in_html(cast_path: str, html_path: str) -> None:
     cast_bytes = Path(cast_path).read_bytes()
     gz_b64 = base64.b64encode(gzip.compress(cast_bytes, compresslevel=9)).decode(
@@ -961,6 +1366,33 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--render",
+        action="append",
+        metavar="EVENT_IDX",
+        help=(
+            "Render the 2D terminal screen and cursor position at EVENT_IDX "
+            "using pyte (repeatable; invoke with uv run --with pyte)"
+        ),
+    )
+    parser.add_argument(
+        "--verify-strip",
+        action="append",
+        metavar="START:END",
+        help=(
+            "Simulate terminal screens across candidate cut START:END using pyte "
+            "and check cursor/scrollback continuity (repeatable)"
+        ),
+    )
+    parser.add_argument(
+        "--strip-range",
+        action="append",
+        metavar="START:END",
+        help=(
+            "Excise inclusive 0-based event range START:END from the stream "
+            "(repeatable; shifts timestamps in v2, preserves dt in v3)"
+        ),
+    )
+    parser.add_argument(
         "--embed-html",
         metavar="HTML_PATH",
         help=(
@@ -982,15 +1414,58 @@ def main() -> int:
         or args.add_event
         or args.set_dt
         or args.tighten_pastes
+        or args.strip_range
     )
 
     if args.inspect:
         inspect_range(header, events, version, args.inspect)
-        if not mutating and not args.search and not args.list:
+        if (
+            not mutating
+            and not args.search
+            and not args.list
+            and not args.render
+            and not args.verify_strip
+        ):
             return 0
 
     if args.search:
         search_events(header, events, version, args.search, context=args.context)
+        if not mutating and not args.list and not args.render and not args.verify_strip:
+            return 0
+
+    if args.verify_strip:
+        for spec in args.verify_strip:
+            verify_strip_range(header, events, version, spec)
+        if not mutating and not args.list and not args.render:
+            return 0
+
+    if args.strip_range:
+        parsed_ranges = sorted(
+            (_parse_range_spec(spec, len(events)) for spec in args.strip_range),
+            key=lambda r: r[0],
+            reverse=True,
+        )
+        for prev_r, next_r in itertools.pairwise(parsed_ranges):
+            if next_r[1] >= prev_r[0]:
+                raise ValueError(
+                    f"Overlapping --strip-range specs: {next_r[0]}:{next_r[1]} and {prev_r[0]}:{prev_r[1]}"
+                )
+        for start_idx, end_idx in parsed_ranges:
+            events, removed_cnt, removed_markers, cut_raw = strip_event_range(
+                events, version, start_idx, end_idx
+            )
+            marker_note = (
+                f", removed markers={removed_markers}" if removed_markers else ""
+            )
+            print(
+                f"[strip-range] Removed #{start_idx:04d}..#{end_idx:04d} "
+                f"({removed_cnt} events, raw={cut_raw:.2f}s{marker_note})"
+            )
+        if version == 2 and "duration" in header and events:
+            header["duration"] = round(float(events[-1][0]), 3)
+
+    if args.render:
+        render_events(header, events, args.render)
         if not mutating and not args.list:
             return 0
 

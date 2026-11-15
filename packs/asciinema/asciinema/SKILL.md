@@ -1,6 +1,6 @@
 ---
 name: asciinema
-description: Record, replay, convert, sanitize, trim, tighten paste/input delays, and manage chapter markers ("m" stop points) in terminal sessions. Use when recording terminal demos, converting .cast files to animated GIF or SVG, embedding asciinema-player in web apps, sanitizing terminal recordings, inspecting cast durations, shortening cut-and-paste or prompt pauses, trimming trailing exit sequences, or adding/moving/inspecting chapter stop-point markers.
+description: Record, replay, convert, sanitize, trim, strip mid-stream sections, simulate terminal screen state with pyte via uv, tighten paste/input delays, and manage chapter markers ("m" stop points) in terminal sessions. Use when recording terminal demos, converting .cast files to animated GIF or SVG, embedding asciinema-player in web apps, sanitizing terminal recordings, inspecting cast durations, rendering or verifying terminal screen frames with pyte, removing mid-stream command sections, shortening cut-and-paste or prompt pauses, trimming trailing exit sequences, or adding/moving/inspecting chapter stop-point markers.
 ---
 
 # Asciinema
@@ -15,7 +15,7 @@ Identify the user's objective and choose the matching workflow:
 2. [Replay or Inspect a Recording](#2-replay-or-inspect-a-recording)
 3. [Convert and Export (GIF / SVG / Text)](#3-convert-and-export)
 4. [Sanitize and Redact Sensitive Data](#4-sanitize-and-redact-sensitive-data)
-5. [Trim Exit Sequences and Inspect Timing](#5-trim-exit-sequences-and-inspect-timing)
+5. [Trim Exit Sequences, Strip Mid-Stream Sections, and Inspect Timing](#5-trim-exit-sequences-strip-mid-stream-sections-and-inspect-timing)
 6. [Manage Chapter Markers (`"m"` Stop Points)](#6-manage-chapter-markers-m-stop-points)
 7. [Embed in Web Applications](#7-embed-in-web-applications)
 8. [Self-Host an asciinema Server](#8-self-host-an-asciinema-server)
@@ -151,11 +151,11 @@ sed -E 's/(ghp_[a-zA-Z0-9]{36}|AKIA[0-9A-Z]{16})/REDACTED/g' session.cast > sani
 
 ---
 
-### 5. Trim Exit Sequences and Inspect Timing
+### 5. Trim Exit Sequences, Strip Mid-Stream Sections, and Inspect Timing
 
-Interactive recordings frequently capture trailing `Ctrl+D` keystrokes, warning prompts (e.g. `press ctrl+d again to exit`), resume text, or dropping back into the shell prompt before session termination.
+Interactive recordings frequently capture trailing `Ctrl+D` keystrokes, warning prompts (e.g. `press ctrl+d again to exit`), resume text, or dropping back into the shell prompt before session termination, as well as unwanted mid-stream diagnostic commands.
 
-Use the bundled utility script [scripts/trim-cast.py](scripts/trim-cast.py):
+Use the bundled utility script [scripts/trim-cast.py](scripts/trim-cast.py) for trailing exit cleanup and [scripts/mark-cast.py](scripts/mark-cast.py) (with `uv run --with pyte`) for 2D terminal screen simulation and mid-stream range stripping:
 
 #### A. Inspect Durations and Detect Exit Sequences
 Inspect recording duration (both raw elapsed time and `idle_time_limit` playback time) and auto-detect trailing exit prompts without modifying the file:
@@ -183,6 +183,32 @@ python3 .agents/skills/asciinema/scripts/trim-cast.py session.cast --in-place --
 ```
 
 - **Checkable Completion Criterion**: Run `python3 .agents/skills/asciinema/scripts/trim-cast.py <file> --info`. Confirm that no trailing exit sequence is detected and duration matches the expected trimmed time.
+
+#### C. Simulating Terminal State with `pyte` (via `uv`) & Stripping Mid-Stream Sections (`--verify-strip` / `--strip-range`)
+Always use **`pyte` invoked via `uv`** (`uv run --with pyte python3 ...`) rather than bare `python3` (where `pyte` is typically not installed globally) or custom regex ANSI parsers when inspecting visual screen state or verifying mid-stream cuts. `mark-cast.py` configures `pyte` with `xterm-ghostty` / ECMA-48 extensions so `DECST8C` (`\x1b[?5W`), `CBT` (`\x1b[3Z`), `REP` (`\x1b[5b`), and multi-chunk `OSC 8` hyperlinks render accurately.
+
+1. **Render 2D terminal screens at boundary events**:
+   ```bash
+   uv run --with pyte python3 .agents/skills/asciinema/scripts/mark-cast.py session.cast \
+     --render 17272 --render 17756
+   ```
+2. **Verify a candidate cut before mutating**:
+   `--verify-strip START:END` simulates the screen before (`START - 1`) and at (`END`), confirms `(cursor.y, cursor.x)` parity, compares the post-cut frame after `END` against the original recording, and flags whether TUI viewport redraws (such as `\r\x1b[32A...\x1b[J`) explicitly re-emit scrollback lines from inside `START:END`:
+   ```bash
+   uv run --with pyte python3 .agents/skills/asciinema/scripts/mark-cast.py session.cast \
+     --verify-strip 17274:17757
+   ```
+3. **Strip the mid-stream event range, relabel remaining markers `1..N`, and re-embed HTML**:
+   ```bash
+   python3 .agents/skills/asciinema/scripts/mark-cast.py session.cast \
+     --strip-range 17274:17757 \
+     --relabel "1. ..." "2. ..." \
+     --in-place \
+     --embed-html prototypes/session-cast-player.html
+   ```
+   *(If `pyte` reports that subsequent TUI full-viewport redraws explicitly re-paint scrollback text from the excised command, note that scrollback lines remain visible until they scroll off-screen unless those redraw payloads are also rewritten.)*
+
+- **Checkable Completion Criterion**: Run `uv run --with pyte python3 .agents/skills/asciinema/scripts/mark-cast.py <file> --verify-strip START:END` before cutting (confirm cursor match and post-cut `IDENTICAL` or acceptable diff), then run `--list` and `--render` after cutting to confirm clean sequential markers and uncorrupted display.
 
 ---
 

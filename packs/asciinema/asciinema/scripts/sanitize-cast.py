@@ -16,7 +16,6 @@ import json
 import re
 import sys
 
-
 OSC_CONTEXT_RE = re.compile(r"\x1b\](?:3008|7);[^\x07\x1b]*(?:\x07|\x1b\\)")
 
 

@@ -5,9 +5,11 @@ description: >-
   (*-cast-player.html) and their embedded gzip+base64 recordings
   (EMBEDDED_CAST_GZ_B64). Use whenever reviewing or editing a cast-player HTML
   file, adding, moving, removing, or relabeling stop points ("m" chapter
-  markers) viewed in an HTML player, shortening cut-and-paste or prompt delays
-  (dt), tuning adaptive segment speeds, updating chapter pills or HUD controls,
-  or scaffolding a new cast-player HTML prototype for a terminal recording.
+  markers) viewed in an HTML player, simulating terminal screens with pyte via
+  uv or stripping mid-stream sections from the backing cast, shortening
+  cut-and-paste or prompt delays (dt), tuning adaptive segment speeds, updating
+  chapter pills or HUD controls, or scaffolding a new cast-player HTML prototype
+  for a terminal recording.
 ---
 
 # Cast-Player HTML (`*-cast-player.html`)
@@ -70,6 +72,19 @@ Place every `"m"` marker **immediately after** the `"o"` stdout event that compl
 
 #### Step 3: Update the `.cast` File, Relabel Sequentially, and Sync the HTML Player & Slidev Deck
 Keep chapter labels numbered sequentially (`1. ...`, `2. ...`, ..., `N. ...`), sync `EMBEDDED_CAST_GZ_B64` into the HTML file, and sync `slides/public/casts/` (if applicable):
+
+```bash
+# Optional: if stripping an unwanted mid-stream command turn, verify screen continuity first with pyte via uv
+uv run --with pyte python3 .agents/skills/asciinema/scripts/mark-cast.py recordings/final/session.cast \
+  --verify-strip 17274:17757
+
+# Excise the verified mid-stream range, relabel remaining stop points 1..N, and re-embed HTML
+python3 .agents/skills/asciinema/scripts/mark-cast.py recordings/final/session.cast \
+  --strip-range 17274:17757 \
+  --relabel "1. ..." "2. ..." \
+  --in-place \
+  --embed-html prototypes/session-cast-player.html
+```
 
 ```bash
 # 1. Insert, move, or remove the stop point in the backing .cast file
