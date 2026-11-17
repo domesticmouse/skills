@@ -90,7 +90,7 @@ Follow the exact schema in [LESSON-FORMAT.md](./references/LESSON-FORMAT.md). Al
 - **Verification & Test Coverage Gates**: `:::verify id="verify-NNNN" title="Verification Lab: ..." badge="..."` (with optional `tier`, `caught`, `missed` attributes when mutation testing is used) containing prose, test/verification commands and code blocks, and `- [ ]` step checklist items.
 - **Multiple-Choice Quizzes**: `:::quiz id="quiz-NNNN" title="Retrieval Practice: ..." badge="3 Questions • Equal-Length Options"` with a YAML list of questions (`question`, `wrong_hint`, and exactly 4 `options` with `letter`, `text`, `correct: true|false`, `explain`). `build.py --check` enforces that all 4 options within each question have identical whitespace-split word counts!
 - **Interactive Widgets**: `{{widget:lesson-cards}}`, `{{widget:reference-cards}}`, and custom interactive simulators (`{{widget:<simulator-id>}}`) defined in `assets/course.js`. In `build_lesson_cards_html()`, strip any leading `Lesson NNNN •` prefix from `badge` before combining it with `LESSON {num}` so `.lesson-card-meta` never duplicates the lesson number (e.g., `LESSON 0001 • Embedded C99 & GPIO`).
-- **Heading Anchor Suffixes (`{#id}`)**: Support `{#anchor-id}` at the end of Markdown headings in `build.py` (converting `## Heading {#my-id}` to `<h2 id="my-id">Heading</h2>`) so raw `{#...}` tokens never leak into rendered HTML.
+- **Heading Anchor Suffixes (`{#id}`) & TeX Math (`KaTeX`)**: Support `{#anchor-id}` at the end of Markdown headings in `build.py` (e.g., `re.sub(r"<h([1-6])>(.*?)\s*\{#([A-Za-z0-9_-]+)\}\s*</h\1>", r'<h\1 id="\3">\2</h\1>', html)` — always preserve the leading `h` before `\1` so malformed `<2 id="...">` tags never appear!). Support inline (`$...$`) and display (`$$...$$`) TeX math by protecting math spans (after fenced code blocks and inline `` `...` `` code spans) with placeholders before `md.render()` and restoring them afterward so `markdown-it-py` never turns subscripts (`$R_1 + R_2$`) into `<em>` tags or strips backslash escapes, then rendering them via **KaTeX** (`katex.min.css`, `katex.min.js`, and `contrib/auto-render.min.js` `renderMathInElement` in `assets/course.js`). Enforce in `build.py --check` that: (a) neither raw `{#...}` tokens nor malformed `<[1-6]` tags appear in rendered HTML, (b) no bare un-delimited TeX macros (`\approx`, `\pm`, `\Omega`, `\times`, `\le`, `\ge`, `\frac`, etc.) appear in prose outside `$...$`/`$$...$$` and `<pre>`/`<code>`, and (c) KaTeX assets are loaded whenever math delimiters are present.
 
 ### Runnable Per-Lesson Companion Apps (`apps/<NNNN-lesson-slug>/`)
 
@@ -108,7 +108,7 @@ Back every lesson with a real, runnable directory under `apps/<NNNN-lesson-slug>
    - Ensure zero compiler/linter warnings and 100% passing tests (plus zero missed mutants when mutation testing is part of the workflow).
    - **Per-lesson validation gate**: Even when authoring multiple lessons in sequence, run `.venv/bin/python .agents/skills/teach-code/scripts/sync_listing.py --check` and `.venv/bin/python build.py --out-dir _site --check` after **each** lesson so schema, link, or quiz word-count errors never accumulate across files. If anything differs between runnable code/output and lessons, `reference/*.md`, or `assets/course.js`, reconcile immediately before moving on.
 
-### Visual Design, Layout Rules, Prism.js & Mermaid.js
+### Visual Design, Layout Rules, Prism.js, Mermaid.js & KaTeX
 
 A lesson should be **beautiful**, with clean, readable typography and layout (think Edward Tufte), since the user will return to these materials to review:
 
@@ -117,6 +117,7 @@ A lesson should be **beautiful**, with clean, readable typography and layout (th
 - **Modern web typography, transitions, and accessibility**: Enable cross-document view transitions (`@view-transition { navigation: auto; }` inside `@media (prefers-reduced-motion: no-preference)`), style focus rings with `:focus-visible` and `outline-offset: 2px` via `:where(...)` (never bare `:focus`), apply `text-wrap: balance` to headings/table headers (`h1, h2, h3, th`) and `text-wrap: pretty` to body copy (`p, li, blockquote`), use semantic HTML landmarks (`<header>`, `<nav>`, `<main>`, `<article>`, `<footer>`), and ensure scrollable `<pre>` code blocks receive `tabindex="0"` for keyboard scrolling (handled automatically in `assets/course.js`).
 - **Prism.js for syntax highlighting**: Format all code blocks with Prism.js (`<pre><code class="language-<lang>">`), and load the Prism `keep-markup` plugin when embedding interactive `<input>` fill-in-the-blank tokens inside code blocks. Never hand-roll syntax `<span>` tags.
 - **Mermaid.js for diagrams**: Use Mermaid.js (`<pre class="mermaid">` configured with `theme: "dark"`, wrapped in `<figure class="mermaid-figure">`) for architecture, lifecycle, state-machine, data-flow, and hierarchy diagrams instead of ASCII-art diagrams.
+- **KaTeX for math rendering**: Render inline (`$...$`) and display (`$$...$$`) TeX equations with KaTeX (`katex.min.css` + `katex.min.js` + `contrib/auto-render.min.js` configured in `assets/course.js` with `ignoredTags: ["script", "noscript", "style", "textarea", "pre", "code", "option"]`). Always wrap TeX commands (`\Omega`, `\approx`, `\pm`, `\times`) inside `$...$` or `$$...$$` delimiters (or use standard Unicode like `Ω`, `≈`, `±` in plain text) so bare backslash macros never leak into prose.
 
 ### Course Index, Navigation & GitHub Pages Hosting
 
@@ -149,7 +150,7 @@ Lessons are built from reusable **components** stored in `assets/`: stylesheets,
 
 Reuse is the default, not the exception. Before authoring a lesson, read `assets/` and build from the components already there. When a lesson needs something new and reusable, write it as a component in `assets/` and wire it into `build.py`; never inline code a future lesson would duplicate.
 
-A shared dark-mode stylesheet (`assets/style.css`) and a shared script (`assets/course.js`) that centrally loads and configures **Prism.js** (including `keep-markup` and the target language grammars) and **Mermaid.js** (`theme: "dark"`) alongside reusable quiz, fill-in-the-blank code exercise, and simulator widgets are the foundational components of the workspace: every lesson and reference sheet links them so the course looks and behaves like one cohesive site.
+A shared dark-mode stylesheet (`assets/style.css`) and a shared script (`assets/course.js`) that centrally loads and configures **Prism.js** (including `keep-markup` and the target language grammars), **Mermaid.js** (`theme: "dark"`), and **KaTeX** (including `auto-render`) alongside reusable quiz, fill-in-the-blank code exercise, and simulator widgets are the foundational components of the workspace: every lesson and reference sheet links them so the course looks and behaves like one cohesive site.
 
 ## The Mission
 

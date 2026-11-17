@@ -25,7 +25,7 @@ COMMON_ENTRYPOINTS = (
 )
 
 COMPLETE_LISTING_RE = re.compile(
-    r"(^#{2,3}\s+(?:Step\s+\d+:\s+)?Complete\b[^\n]*\bListing\s*\n"
+    r"(^#{2,3}\s+(?:Step\s+\d+:\s+)?Complete\b[^\n]*\bListing(?:\s+\{#[-A-Za-z0-9_:]+\})?\s*\n"
     r"(?:(?!^```|^#{1,3}\s)[^\n]*\n)*?"
     r"```[^\n]*\n)"
     r"(.*?)"
@@ -33,7 +33,7 @@ COMPLETE_LISTING_RE = re.compile(
     re.MULTILINE | re.DOTALL,
 )
 HEADING_ENTRY_RE = re.compile(
-    r"^#{2,3}\s+(?:Step\s+\d+:\s+)?Complete\b([^\n]*)\bListing\s*$",
+    r"^#{2,3}\s+(?:Step\s+\d+:\s+)?Complete\b([^\n]*)\bListing(?:\s+\{#[-A-Za-z0-9_:]+\})?\s*$",
     re.MULTILINE,
 )
 
