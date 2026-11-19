@@ -30,14 +30,14 @@ This skill automates the mechanical alignment, KiCad `.kicad_pcb` generation, DR
    - Use plated through-holes (`thru_hole circle`, `6.2 mm` drill, `8.6 mm` pad) with `(layers "*.Cu" "B.Mask")` on jack cutouts:
      - **Front (`F.Cu` / `F.Mask`)**: Solid zone connection (`(connect_pads yes)`) tented under solder mask for a smooth, blemish-free exterior finish with zero thermal-spoke shadows or exposed copper rings around the `9.5 mm` M6 nuts.
      - **Back (`B.Cu` / `B.Mask`)**: Exposed `8.6 mm` gold/HASL grounding ring so tightening the jack nuts or resting the jack bushing shoulders automatically bonds both `F.Cu` and `B.Cu` shield planes to chassis `GND`.
-   - Place **`JLCJLCJLCJLC`** on `B.SilkS` (mirrored) so the PCB manufacturer prints the order barcode on the rear face.
+   - Place a **`5 mm × 5 mm` solid filled square** on `B.SilkS` for replacement with the JLCPCB QR code during ordering.
 
 ---
 
 ## 2. Automated Panel Workflow
 
 ### Step 1: Inspect Main PCB Coordinates & Bushing Offsets
-Run [generate_eurorack_panel.py](./scripts/generate_eurorack_panel.py) with `--inspect` to parse the main `.kicad_pcb` file, auto-detect its `Edge.Cuts` outline (`gr_rect` or `gr_line`) and HP width, extract panel-mounted components (3.5mm jacks, vertical potentiometers, toggle switches, and 3mm/5mm THT LEDs), and print the exact footprint-origin, global-bushing, and panel-local `(X, Y)` coordinates:
+Run [generate_eurorack_panel.py](./scripts/generate_eurorack_panel.py) with `--inspect` to parse the main `.kicad_pcb` file, auto-detect its `Edge.Cuts` outline (`gr_rect` or `gr_line`) and HP width, extract panel-mounted components (3.5mm jacks, vertical potentiometers, toggle switches, and 3mm/5mm THT LEDs), and print the exact footprint-origin, global-bushing, panel-local `(X, Y)` coordinates, and derived front-panel `Label` (automatically stripped from each footprint's `"Silkscreen"` property or falling back to `Value`):
 
 ```bash
 python3 .agents/skills/eurorack-panel/scripts/generate_eurorack_panel.py \
@@ -46,7 +46,7 @@ python3 .agents/skills/eurorack-panel/scripts/generate_eurorack_panel.py \
 ```
 
 ### Step 2: Generate the Panel `.kicad_pcb`, Run DRC, and Export Gerbers
-Generate the standalone front panel board, automatically refill `F.Cu` and `B.Cu` `GND` copper zones via KiCad's bundled `pcbnew.ZONE_FILLER`, run `kicad-cli pcb drc`, and package Gerbers + Excellon drills (run outside the sandbox with `BypassSandbox: true` on macOS if sandbox access to `/Applications/KiCad/KiCad.app` is restricted):
+Generate the standalone front panel board, automatically refill `F.Cu` and `B.Cu` `GND` copper zones via KiCad's bundled `pcbnew.ZONE_FILLER`, run `kicad-cli pcb drc`, and package Gerbers + Excellon drills (run outside the sandbox with `BypassSandbox: true` on macOS if sandbox access to `/Applications/KiCad/KiCad.app` is restricted). Use `-l` / `--label REF=TEXT` (repeatable) to override individual component silkscreen labels, and `--cascade-arrow` / `--no-cascade-arrow` to control the normalled cascade arrow between row groups:
 
 ```bash
 python3 .agents/skills/eurorack-panel/scripts/generate_eurorack_panel.py \
@@ -54,6 +54,7 @@ python3 .agents/skills/eurorack-panel/scripts/generate_eurorack_panel.py \
     --output BufferedMult_Panel.kicad_pcb \
     --title "BUF MULT" \
     --subtitle "1:3 / 1:6" \
+    -l D4=ENV \
     --gerber-dir production/panel \
     --zip production/BufferedMult_Panel.zip \
     --drc
