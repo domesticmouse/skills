@@ -115,7 +115,7 @@ npx skills add domesticmouse/skills/packs/gpui
 
 ### [`packs/hardware`](packs/hardware) — Embedded & Hardware Development Pack
 
-Skills for electronic circuit design, PCB/PCBA workflows, Eurorack front panels, embedded systems, RTOS development, and board bring-up:
+Skills for electronic circuit design, automated 2-layer KiCad 10 PCB layout, silkscreen/fabrication markup, PCBA workflows, Eurorack front panels, embedded systems, RTOS development, and board bring-up:
 
 ```bash
 npx skills add domesticmouse/skills/packs/hardware
@@ -124,6 +124,8 @@ npx skills add domesticmouse/skills/packs/hardware
 > **Recommended Companion Skills:** Pair this pack with [`aklofas/kicad-happy`](https://github.com/aklofas/kicad-happy) (`npx skills add aklofas/kicad-happy`) for comprehensive KiCad schematic/PCB/Gerber analysis, footprint/symbol inspection, and fabrication verification.
 
 - **[`eurorack-panel`](packs/hardware/eurorack-panel/SKILL.md):** Design, inspect, and generate mated Doepfer A-100 3U Eurorack front panels in KiCad (`.kicad_pcb`) from a main circuit PCB ([`generate_eurorack_panel.py`](packs/hardware/eurorack-panel/scripts/generate_eurorack_panel.py)), including footprint-to-bushing mechanical offset compensation, M3 mounting slots, silkscreen callouts, grounded `F.Cu`/`B.Cu` copper shield planes, DRC checks, and Gerber/Excellon drill exports.
+- **[`kicad-pcbnew-layout`](packs/hardware/kicad-pcbnew-layout/SKILL.md):** Programmatically generate, place, route, and `GND`-copper-pour 2-layer KiCad 10 boards (`.kicad_pcb`) from `.net` netlists using KiCad's `pcbnew` Python API ([`pcbnew_layout_template.py`](packs/hardware/kicad-pcbnew-layout/scripts/pcbnew_layout_template.py)), avoiding segfaults, `VP-001` via-in-pad warnings, `holes_co_located`, and `track_dangling` DRC errors, with reference guides ([`kicad10_pcbnew_api.md`](packs/hardware/kicad-pcbnew-layout/references/kicad10_pcbnew_api.md), [`routing_and_dfm_patterns.md`](packs/hardware/kicad-pcbnew-layout/references/routing_and_dfm_patterns.md)).
+- **[`kicad-silkscreen-markup`](packs/hardware/kicad-silkscreen-markup/SKILL.md):** Apply collision-free Reference and user-text Value silkscreen pairs using `SilkGrid` true stroke-font measurement, 2D Euclidean offset placement (`place_ref_val_pair`), `B.SilkS`-mirrored callouts, dual-sided THT/test-point labels, component polarity indicators, `5x5 mm` JLCPCB QR placeholders, complete `B.Fab` fabrication notes, and the `--inspect` CLI ([`silk_annotator.py`](packs/hardware/kicad-silkscreen-markup/scripts/silk_annotator.py)).
 - **[`nuttx-architecture`](packs/hardware/nuttx-architecture/SKILL.md):** Architectural guide and development workflows for the Apache NuttX RTOS (`nuttx`) and user-space application suite (`apps`) repositories, including board porting (Renesas RA4M1 targets), device drivers, kernel subsystems, and NuttShell (`nsh`) applications.
 - **[`skidl`](packs/hardware/skidl/SKILL.md):** Circuit design in Python with SKiDL for generating KiCad netlists (`.net`), PCBs, XML BOMs, hierarchical subcircuits, Electrical Rules Checking (`ERC`), and live-verified JLCPCB/LCSC PCBA BOM CSVs ([`jlcpcb_search.py`](packs/hardware/skidl/scripts/jlcpcb_search.py)).
 
