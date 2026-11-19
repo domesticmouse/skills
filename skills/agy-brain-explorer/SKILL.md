@@ -222,7 +222,7 @@ uv run .agents/skills/agy-brain-explorer/scripts/agy-brain-explorer.py <SESSION>
 ```
 
 #### Multi-Take Recording Audit & Cleanup
-When an operator takes multiple attempts to record an `asciinema` `.cast` session in the same project workspace, `~/.gemini/**/brain/` accumulates every aborted or superseded session under that project (including sessions started from subdirectories like `<project>/lib`). Exporting by `--project` will include all takes (`01-...`, `02-...`, etc.). To isolate the canonical session(s):
+When an operator takes multiple attempts to record an `asciinema` `.cast` session in the same project workspace, `~/.gemini/**/brain/` accumulates every aborted or superseded session under that project (including sessions started from subdirectories like `<project>/lib`). Pair this audit with `/asciinema` (`.agents/skills/asciinema/references/RUNBOOK-FORMAT.md`) to run an incremental `Record → Correlate → Post-Process → Verify` gate after each recording and populate its `Cast ↔ Trajectory Correlation` ledger. Exporting by `--project` will include all takes (`01-...`, `02-...`, etc.). To isolate the canonical session(s):
 1. **Correlate Timestamps**: Read the `.cast` header `"timestamp"` (Unix epoch start time) and raw duration (`trim-cast.py <file> --info`), then compare against the `Created (Local)` and `Duration` fields in the exported `README.md` (or `agy-brain-explorer.py --project <proj>`).
 2. **Trash Superseded Takes**: Move earlier aborted or superseded sessions to macOS Trash by short ID:
    ```bash

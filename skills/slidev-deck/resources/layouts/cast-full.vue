@@ -8,6 +8,7 @@ import AsciinemaPlayer from '../components/AsciinemaPlayer.vue'
     <div class="flex-1 w-full min-h-0 flex items-center justify-center">
       <AsciinemaPlayer
         v-if="$frontmatter.cast || $frontmatter.castSrc"
+        :key="$frontmatter.cast || $frontmatter.castSrc || $page"
         :src="$frontmatter.cast || $frontmatter.castSrc"
         :title="$frontmatter.title"
         :autoPlay="$frontmatter.autoPlay ?? false"
@@ -19,8 +20,11 @@ import AsciinemaPlayer from '../components/AsciinemaPlayer.vue'
         :markers="$frontmatter.markers ?? []"
         :pauseOnMarkers="$frontmatter.pauseOnMarkers ?? true"
         :showChapterBar="$frontmatter.showChapterBar ?? false"
+        :initialStopPoint="$frontmatter.initialStopPoint"
         class="w-full h-full"
-      />
+      >
+        <slot />
+      </AsciinemaPlayer>
       <div v-else class="w-full h-full flex flex-col justify-center">
         <slot />
       </div>

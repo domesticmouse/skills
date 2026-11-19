@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { useSlideContext } from '@slidev/client'
 import 'asciinema-player/dist/bundle/asciinema-player.css'
 
 export interface CastSegmentInfo {
@@ -113,6 +114,10 @@ export interface AsciinemaPlayerProps {
    * Show the development chapter stepper pills, transport bar, and segment HUD (default: false)
    */
   showChapterBar?: boolean
+  /**
+   * Optional 1-based stop point index to pre-position the player on mount
+   */
+  initialStopPoint?: number
 }
 
 const props = withDefaults(defineProps<AsciinemaPlayerProps>(), {
@@ -136,8 +141,10 @@ const props = withDefaults(defineProps<AsciinemaPlayerProps>(), {
   markers: () => [],
   pauseOnMarkers: true,
   showChapterBar: false,
+  initialStopPoint: undefined,
 })
 
+const wrapperRef = ref<HTMLDivElement | null>(null)
 const containerRef = ref<HTMLDivElement | null>(null)
 const chapters = ref<CastChapterInfo[]>([])
 const segments = ref<CastSegmentInfo[]>([])
@@ -147,10 +154,70 @@ const currentSegmentIdx = ref<number>(0)
 const isPlaying = ref<boolean>(false)
 const statusText = ref<string>('Ready (Paused)')
 const statusMode = ref<'' | 'playing' | 'paused-marker'>('')
+const castMissing = ref<boolean>(false)
+
+const instanceUid = Math.random().toString(36).slice(2, 10)
+const { $page, $nav, $renderContext } = useSlideContext()
+
+const isSlideActive = computed<boolean>(() => {
+  const onCurrentPage = $page.value === $nav.value.currentSlideNo
+  const renderCtx = $renderContext?.value
+  const inMainStage = !renderCtx || ['slide', 'presenter'].includes(renderCtx)
+  return onCurrentPage && inMainStage
+})
 
 let playerInstance: any = null
 let resizeObserver: ResizeObserver | null = null
 let speedPollTimer: ReturnType<typeof setInterval> | null = null
+let initGeneration = 0
+let keydownAttached = false
+
+function isElementVisible(): boolean {
+  if (!wrapperRef.value) return false
+  return wrapperRef.value.getClientRects().length > 0
+}
+
+function attachStageKeydown() {
+  if (typeof window === 'undefined' || keydownAttached) return
+  window.addEventListener('keydown', handleStageKeydown, true)
+  keydownAttached = true
+}
+
+function detachStageKeydown() {
+  if (typeof window === 'undefined' || !keydownAttached) return
+  window.removeEventListener('keydown', handleStageKeydown, true)
+  keydownAttached = false
+}
+
+function startSpeedPoll() {
+  if (speedPollTimer || !playerInstance || !isSlideActive.value) return
+  speedPollTimer = setInterval(() => {
+    syncLiveSpeedFromPlayer()
+  }, 100)
+}
+
+function stopSpeedPoll() {
+  if (speedPollTimer) {
+    clearInterval(speedPollTimer)
+    speedPollTimer = null
+  }
+}
+
+function blurPlayerFocus() {
+  if (typeof document === 'undefined' || !wrapperRef.value) return
+  const active = document.activeElement as HTMLElement | null
+  if (active && wrapperRef.value.contains(active) && typeof active.blur === 'function') {
+    active.blur()
+  }
+}
+
+function handleWrapperClick() {
+  if (typeof document === 'undefined' || !wrapperRef.value) return
+  const active = document.activeElement as HTMLElement | null
+  if (active && wrapperRef.value.contains(active) && active.tagName === 'BUTTON') {
+    active.blur()
+  }
+}
 
 const currentSegment = computed<CastSegmentInfo | null>(() => {
   if (!segments.value.length) return null
@@ -400,7 +467,7 @@ function applyEndState(reason: 'ended' | 'jumped' = 'jumped') {
 }
 
 async function syncLiveSpeedFromPlayer() {
-  if (!playerInstance || typeof playerInstance.getCurrentTime !== 'function') return
+  if (!isSlideActive.value || !playerInstance || typeof playerInstance.getCurrentTime !== 'function') return
   try {
     const t = await playerInstance.getCurrentTime()
     if (typeof t !== 'number' || Number.isNaN(t)) return
@@ -544,19 +611,23 @@ function stepNextChapter() {
 }
 
 function handleStageKeydown(e: KeyboardEvent) {
+  if (castMissing.value || !isSlideActive.value || !isElementVisible()) return
   const targetTag = (e.target as HTMLElement | null)?.tagName
   if (targetTag && ['INPUT', 'SELECT', 'TEXTAREA'].includes(targetTag)) return
   if (e.key === '[') {
     e.preventDefault()
     e.stopPropagation()
+    e.stopImmediatePropagation()
     stepPrevChapter()
   } else if (e.key === ']') {
     e.preventDefault()
     e.stopPropagation()
+    e.stopImmediatePropagation()
     stepNextChapter()
   } else if (e.key === 'p' || e.key === 'P') {
     e.preventDefault()
     e.stopPropagation()
+    e.stopImmediatePropagation()
     togglePlay()
   }
 }
@@ -568,13 +639,39 @@ async function initPlayer() {
   if (typeof window === 'undefined' || !containerRef.value) return
 
   teardownPlayer()
+  const gen = ++initGeneration
 
   try {
     const AsciinemaPlayer = await import('asciinema-player')
+    if (gen !== initGeneration || !containerRef.value) return
     const resolvedSrc = resolveUrl(props.src)
 
     const resp = await fetch(resolvedSrc)
+    if (gen !== initGeneration || !containerRef.value) return
+    if (!resp.ok) {
+      castMissing.value = true
+      return
+    }
     const rawCastText = await resp.text()
+    if (gen !== initGeneration || !containerRef.value) return
+    const firstContentLine = rawCastText
+      .split(/\r?\n/)
+      .find((l) => l.trim() && !l.trim().startsWith('#'))
+    if (!firstContentLine || !firstContentLine.trim().startsWith('{')) {
+      castMissing.value = true
+      return
+    }
+    try {
+      JSON.parse(firstContentLine)
+    } catch {
+      castMissing.value = true
+      return
+    }
+    if (castMissing.value) {
+      castMissing.value = false
+      await nextTick()
+      if (gen !== initGeneration || !containerRef.value) return
+    }
 
     const { v2Text, foundChapters, computedSegments } = prepareCastForPlayer(
       rawCastText,
@@ -585,19 +682,37 @@ async function initPlayer() {
 
     chapters.value = foundChapters
     segments.value = computedSegments
-    activeChapterIdx.value = -1
-    hitChapterIdx.value = -1
-    currentSegmentIdx.value = 0
+
+    let initCh: CastChapterInfo | null = null
+    let initIdx = -1
+    if (
+      props.initialStopPoint !== undefined &&
+      props.initialStopPoint >= 1 &&
+      props.initialStopPoint <= foundChapters.length
+    ) {
+      initIdx = props.initialStopPoint - 1
+      initCh = foundChapters[initIdx]
+      activeChapterIdx.value = initIdx
+      hitChapterIdx.value = initIdx
+      currentSegmentIdx.value = Math.min(computedSegments.length - 1, initIdx + 1)
+      lastPolledTime = initCh.playTime
+      statusText.value = `⏸ Stop Point ${initIdx + 1}/${foundChapters.length}: ${initCh.label} · Next: ${initCh.nextSpeed}x`
+      statusMode.value = 'paused-marker'
+    } else {
+      activeChapterIdx.value = -1
+      hitChapterIdx.value = -1
+      currentSegmentIdx.value = 0
+    }
 
     const playerOptions: Record<string, any> = {
       cols: props.cols,
       rows: props.rows,
-      autoPlay: props.autoPlay,
+      autoPlay: props.autoPlay && isSlideActive.value,
       preload: props.preload,
       loop: props.loop,
       speed: 1,
       idleTimeLimit: 999999,
-      startAt: props.startAt,
+      startAt: initCh ? initCh.playTime : props.startAt,
       theme: props.theme,
       fit: props.fit,
       controls: props.controls,
@@ -614,13 +729,34 @@ async function initPlayer() {
     })
 
     playerInstance = AsciinemaPlayer.create({ data: v2Text }, containerRef.value, playerOptions)
-    lastPolledTime = 0
 
-    speedPollTimer = setInterval(() => {
-      syncLiveSpeedFromPlayer()
-    }, 100)
+    // Scope duplicate SVG mask IDs inside asciinema-player's StartOverlay across multiple slide instances
+    const maskEl = containerRef.value.querySelector('mask#small-triangle-mask')
+    if (maskEl) {
+      const uniqueMaskId = `small-triangle-mask-${instanceUid}`
+      maskEl.id = uniqueMaskId
+      containerRef.value
+        .querySelectorAll('[mask="url(#small-triangle-mask)"]')
+        .forEach((el) => el.setAttribute('mask', `url(#${uniqueMaskId})`))
+    }
+
+    if (initCh) {
+      lastPolledTime = initCh.playTime
+      await playerInstance.seek(initCh.playTime)
+    } else {
+      lastPolledTime = 0
+    }
+
+    if (isSlideActive.value) {
+      startSpeedPoll()
+    }
 
     playerInstance.addEventListener('play', () => {
+      if (!isSlideActive.value) {
+        playerInstance?.pause()
+        isPlaying.value = false
+        return
+      }
       isPlaying.value = true
       if (activeChapterIdx.value >= chapters.value.length) {
         activeChapterIdx.value = -1
@@ -691,10 +827,8 @@ async function initPlayer() {
 }
 
 function teardownPlayer() {
-  if (speedPollTimer) {
-    clearInterval(speedPollTimer)
-    speedPollTimer = null
-  }
+  initGeneration++
+  stopSpeedPoll()
   if (resizeObserver) {
     resizeObserver.disconnect()
     resizeObserver = null
@@ -710,20 +844,44 @@ function teardownPlayer() {
   }
 }
 
+watch(
+  isSlideActive,
+  (active) => {
+    if (active) {
+      attachStageKeydown()
+      startSpeedPoll()
+      nextTick(() => {
+        syncLiveSpeedFromPlayer()
+      })
+    } else {
+      detachStageKeydown()
+      stopSpeedPoll()
+      blurPlayerFocus()
+      if (playerInstance && isPlaying.value) {
+        playerInstance.pause()
+        isPlaying.value = false
+      }
+    }
+  },
+  { immediate: true }
+)
+
 onMounted(() => {
-  window.addEventListener('keydown', handleStageKeydown, true)
+  if (isSlideActive.value) {
+    attachStageKeydown()
+  }
   nextTick(() => {
     initPlayer()
   })
 })
 
 onUnmounted(() => {
-  window.removeEventListener('keydown', handleStageKeydown, true)
+  detachStageKeydown()
   teardownPlayer()
 })
 
 watch(
-  () => [props.src, props.theme, props.fit, props.speed, props.maxSegmentDuration, props.idleTimeLimit],
+  () => [props.src, props.theme, props.fit, props.speed, props.maxSegmentDuration, props.idleTimeLimit, props.initialStopPoint],
   () => {
     initPlayer()
   }
@@ -731,9 +889,18 @@ watch(
 </script>
 
 <template>
-  <div class="asciinema-player-wrapper">
+  <div ref="wrapperRef" class="asciinema-player-wrapper" @click="handleWrapperClick">
+    <!-- Placeholder fallback when the target .cast file has not yet been recorded/synced -->
+    <div v-if="castMissing" class="w-full h-full flex flex-col justify-center">
+      <slot>
+        <div class="p-6 rounded-xl bg-gray-900/80 border border-gray-800 text-center text-gray-300 font-mono text-sm">
+          Pending asciinema recording: {{ props.src }}
+        </div>
+      </slot>
+    </div>
+
     <!-- Optional Development Chapter Controls & Live Speed Bar (enabled via showChapterBar: true) -->
-    <div v-if="props.showChapterBar && chapters.length > 0" class="asciinema-chapter-header">
+    <div v-if="!castMissing && props.showChapterBar && chapters.length > 0" class="asciinema-chapter-header">
       <div class="asciinema-header-top">
         <div class="asciinema-chapter-pills">
           <button
@@ -797,9 +964,9 @@ watch(
       </div>
     </div>
 
-    <div ref="containerRef" class="asciinema-player-element" />
+    <div v-show="!castMissing" ref="containerRef" class="asciinema-player-element" />
 
-    <div class="asciinema-speed-hint" :class="getSpeedTier(currentSpeed)">
+    <div v-show="!castMissing" class="asciinema-speed-hint" :class="getSpeedTier(currentSpeed)">
       <span>Playback speed: <strong>{{ currentSpeed }}x</strong></span>
       <template v-if="props.showChapterBar && currentSegment">
         <span>·</span>

@@ -722,12 +722,16 @@ def tighten_paste_delays(
       2. Shell Enter [UNREV] redraw frames (\\x1b[A...\\x1b[27m): cap dt to unrev_dt.
       3. agy startup model header settle before initial prompt: cap dt to pre_paste_dt.
       4. TUI pasted prompts or first typed prompt character: cap dt to pre_paste_dt.
-      5. Slash-command execution frame after '(/clear)' marker: cap dt to pre_paste_dt.
+      5. Slash-command execution frame after '(/clear)' marker or ask_question '✓ ' confirmation after marker: cap dt to pre_paste_dt.
       6. Input-box clear/submit events after an 'm' marker: cap dt to submit_dt.
     """
     notes: list[str] = []
     input_clear_re = re.compile(
-        r"^\x1b\[\?2026h(?:\x1b\[\d+D\x1b\[K|\r\n\n\n\x1b\[J\x1b\[3A\x1b\[2C\x1b\[K)"
+        r"^\x1b\[\?2026h(?:\x1b\[\d+D\x1b\[K|\r\x1b\[2C\x1b\[K|\r\n\n\n\x1b\[J\x1b\[3A\x1b\[2C\x1b\[K)"
+    )
+    agy_footer_badges = (
+        " \x1b[2mG\x1b[m\x1b[2A",
+        "\x1b[1K \x1b[33ma\x1b[m\x1b[2A",
     )
 
     for idx, ev in enumerate(events):
@@ -752,11 +756,12 @@ def tighten_paste_delays(
             if prev_is_marker and len(events[idx - 1]) >= 3
             else ""
         )
-        next_has_g_badge = (
+        has_footer_badge = any(b in s for b in agy_footer_badges)
+        next_has_footer_badge = (
             idx + 1 < len(events)
             and len(events[idx + 1]) >= 3
             and events[idx + 1][1] == "o"
-            and " \x1b[2mG\x1b[m\x1b[2A" in str(events[idx + 1][2])
+            and any(b in str(events[idx + 1][2]) for b in agy_footer_badges)
         )
 
         target_dt: float | None = None
@@ -780,10 +785,15 @@ def tighten_paste_delays(
         ):
             target_dt = pre_paste_dt
             reason = "agy banner settle"
-        elif next_is_marker and " \x1b[2mG\x1b[m\x1b[2A" in s and old_dt > pre_paste_dt:
+        elif next_is_marker and has_footer_badge and old_dt > pre_paste_dt:
             target_dt = pre_paste_dt
             reason = "agy pasted prompt"
-        elif next_has_g_badge and old_dt > pre_paste_dt:
+        elif (
+            next_has_footer_badge
+            or (
+                prev_is_marker and "ready for" in prev_marker_label and has_footer_badge
+            )
+        ) and old_dt > pre_paste_dt:
             target_dt = pre_paste_dt
             reason = "agy typed prompt start"
         elif prev_is_marker and "/clear" in prev_marker_label and old_dt > pre_paste_dt:
@@ -792,6 +802,9 @@ def tighten_paste_delays(
         elif prev_is_marker and input_clear_re.match(s) and old_dt > submit_dt:
             target_dt = submit_dt
             reason = "agy prompt submit"
+        elif prev_is_marker and "✓ " in strip_ansi(s) and old_dt > pre_paste_dt:
+            target_dt = pre_paste_dt
+            reason = "agy question selection"
 
         if target_dt is not None:
             set_event_dt(events, version, idx, target_dt)
@@ -1245,10 +1258,11 @@ def main() -> int:
     )
     parser.add_argument(
         "--inspect",
+        action="append",
         metavar="START[:END]",
         help=(
             "Inspect events in range START:END (or around event index START) "
-            "with dt, raw, 1x, and stripped stdout"
+            "with dt, raw, 1x, and stripped stdout (repeatable)"
         ),
     )
     parser.add_argument(
@@ -1418,7 +1432,8 @@ def main() -> int:
     )
 
     if args.inspect:
-        inspect_range(header, events, version, args.inspect)
+        for spec in args.inspect:
+            inspect_range(header, events, version, spec)
         if (
             not mutating
             and not args.search
@@ -1543,17 +1558,27 @@ def main() -> int:
                 )
 
     if args.add_event:
-        for idx_str, label in args.add_event:
+        orig_len = len(events)
+        results: dict[int, tuple[int, str, bool]] = {}
+        ordered_add_events = sorted(
+            enumerate(args.add_event),
+            key=lambda item: (int(item[1][0]), item[0]),
+            reverse=True,
+        )
+        for pos, (idx_str, label) in ordered_add_events:
             target_idx = int(idx_str)
             events, ok = add_event_marker(
                 events, version, target_idx, label, insert_after=not args.before
             )
+            results[pos] = (target_idx, label, ok)
+        for pos in range(len(args.add_event)):
+            target_idx, label, ok = results[pos]
             if ok:
                 print(f"[add-event] + {label!r} at event #{target_idx:04d}")
             else:
                 print(
                     f"[add-event] WARNING: event #{target_idx} out of range "
-                    f"(0..{len(events) - 1})"
+                    f"(0..{orig_len - 1})"
                 )
 
     if args.add_time:
