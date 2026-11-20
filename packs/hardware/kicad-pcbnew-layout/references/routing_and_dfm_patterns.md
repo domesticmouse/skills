@@ -44,3 +44,12 @@ Collapsing collinear steps along each A* path dramatically cuts segment count (~
   1. Immediately mark segments/vias on `router` as each branch is routed, and collect `junctions.add(path[0]); junctions.add(path[-1])`.
   2. Emit merged tracks after all branches of a net complete via `_merge_collinear_path(path, junctions)`, keeping any vertex `p_cur in junctions` intact even when collinear.
   3. Deduplicate emitted vias per net (`emitted_vias.add((gx, gy))`).
+
+## 5. Silkscreen Label Corridors & Density-Adaptive Passive Labeling
+
+On narrow boards (`<= 30 mm` wide) where 45–60 SMD parts share `B.Cu` alongside THT panel pin headers and test points, cramming `0603` passives into `< 2.0 mm` vertical/horizontal pitches leaves zero local solder mask for `<REF> + <VAL>` pairs (`~5–9 mm` wide each at `0.80 mm` text height).
+
+- **Pair `1.5–2.0 mm` row spacing with value-only passive labels (`R*`, `C*`)**:
+  - Keep at least `1.5–2.0 mm` of clear solder mask beside dense `0603`/`0805` passive rows and away from THT pad rows and IC `.Fab` bodies.
+  - On dense sides (`>= 1.0 footprints/cm²` or `>= 35` parts), label resistors (`R*`) and capacitors (`C*`) with only their concise primary value (`10k`, `100nF`, `15pF`, `22uF`) via `place_ref_val_pair(..., val_only="auto")` / `place_val_only()` so every label fits within `<= 3.5 mm` of its own footprint edge (`<= 6.0 mm` for THT).
+  - Reserve `<REF> + <VAL>` pairs for ICs (`U*`), diodes (`D*`), controls (`RV*`), jacks (`J*`), LEDs, and test points (`TP*`), and never add board-wide fallback scans that scatter labels across the board.

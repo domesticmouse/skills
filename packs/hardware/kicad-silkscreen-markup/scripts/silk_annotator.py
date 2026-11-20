@@ -7,6 +7,7 @@ import argparse
 import math
 import os
 import pathlib
+import re
 import sys
 
 KICAD_PYTHON = pathlib.Path(
@@ -23,6 +24,71 @@ except ModuleNotFoundError:
 SILK_HEIGHT = 0.80
 SILK_THICKNESS = 0.15
 SILK_EDGE_CLEARANCE = 0.45
+MAX_SMD_TETHER_MM = 3.5
+MAX_THT_TETHER_MM = 6.0
+MAX_PAIR_SPLIT_MM = 1.2
+DENSE_THRESHOLD_PER_CM2 = 1.0
+
+
+def is_fiducial_ref(ref: str) -> bool:
+    """Return True if the reference designator belongs to a fiducial marker."""
+    return ref.strip().upper().startswith("FID")
+
+
+def is_mounting_hole(fp: pcbnew.FOOTPRINT) -> bool:
+    """Return True for NPTH/no-pad mechanical mounting holes (H*/MH*)."""
+    ref = fp.GetReference().strip().upper()
+    if not re.match(r"^M?H\d+$", ref):
+        return False
+    return all(pad.GetAttribute() == pcbnew.PAD_ATTRIB_NPTH for pad in fp.Pads())
+
+
+def is_passive_ref(ref: str) -> bool:
+    """Return True for fixed resistors/capacitors (R*/C*), excluding potentiometers (RV*)."""
+    return bool(re.match(r"^[RC]\d+$", ref.strip().upper()))
+
+
+def compact_passive_value(val_text: str) -> str:
+    """Extract the concise primary value token for passives (e.g., '100k 0.1%' -> '100k')."""
+    tokens = val_text.strip().split()
+    return tokens[0] if tokens else ""
+
+
+def is_smd_footprint(fp: pcbnew.FOOTPRINT) -> bool:
+    """Return True if the footprint contains SMD pads."""
+    return any(pad.GetAttribute() == pcbnew.PAD_ATTRIB_SMD for pad in fp.Pads())
+
+
+def footprint_bbox(fp: pcbnew.FOOTPRINT) -> tuple[float, float, float, float]:
+    """Return tight (x0, y0, x1, y1) mm bbox across pads and non-text Fab/SilkS graphics."""
+    xs: list[float] = []
+    ys: list[float] = []
+    for pad in fp.Pads():
+        _, _, x0, y0, x1, y1, _ = extract_pad_geometry(pad)
+        xs.extend((x0, x1))
+        ys.extend((y0, y1))
+    body_layers = (pcbnew.F_Fab, pcbnew.B_Fab, pcbnew.F_SilkS, pcbnew.B_SilkS)
+    for gi in fp.GraphicalItems():
+        if hasattr(gi, "GetText") or gi.GetLayer() not in body_layers:
+            continue
+        bb = gi.GetBoundingBox()
+        xs.extend((pcbnew.ToMM(bb.GetLeft()), pcbnew.ToMM(bb.GetRight())))
+        ys.extend((pcbnew.ToMM(bb.GetTop()), pcbnew.ToMM(bb.GetBottom())))
+    if xs and ys:
+        return (min(xs), min(ys), max(xs), max(ys))
+    pos = fp.GetPosition()
+    cx, cy = pcbnew.ToMM(pos.x), pcbnew.ToMM(pos.y)
+    return (cx - 0.5, cy - 0.5, cx + 0.5, cy + 0.5)
+
+
+def box_edge_distance(
+    a: tuple[float, float, float, float],
+    b: tuple[float, float, float, float],
+) -> float:
+    """Return Euclidean distance in mm between two axis-aligned boxes (0 if overlapping)."""
+    dx = max(a[0] - b[2], 0.0, b[0] - a[2])
+    dy = max(a[1] - b[3], 0.0, b[1] - a[3])
+    return math.hypot(dx, dy)
 
 
 def extract_pad_geometry(
@@ -46,7 +112,7 @@ def extract_pad_geometry(
 
 
 class SilkGrid:
-    """Tracks pad/mask keepouts, footprint silkscreen outlines, board margins, and placed silk."""
+    """Tracks pad/mask keepouts, footprint outlines, SMD .Fab bodies, board margins, and placed silk."""
 
     def __init__(
         self,
@@ -54,6 +120,7 @@ class SilkGrid:
         footprints: dict[str, pcbnew.FOOTPRINT] | None = None,
         board_bounds: tuple[float, float, float, float] | None = None,
         edge_clearance: float = SILK_EDGE_CLEARANCE,
+        block_smd_fab: bool = True,
     ) -> None:
         self.board = board
         self.edge_clearance = edge_clearance
@@ -75,6 +142,7 @@ class SilkGrid:
             if footprints is not None
             else list(board.GetFootprints())
         )
+        self.footprints = fp_list
         pad_pad = 0.25
         silk_pad = 0.20
         for fp in fp_list:
@@ -105,6 +173,56 @@ class SilkGrid:
                         pcbnew.ToMM(bb.GetBottom()) + silk_pad,
                     )
                 )
+            if block_smd_fab:
+                fp_side = 1 if fp.IsFlipped() else 0
+                if is_fiducial_ref(fp.GetReference()):
+                    pos = fp.GetPosition()
+                    fx, fy = pcbnew.ToMM(pos.x), pcbnew.ToMM(pos.y)
+                    self.keepout[fp_side].append(
+                        (fx - 1.25, fy - 1.25, fx + 1.25, fy + 1.25)
+                    )
+                elif is_smd_footprint(fp):
+                    fp_fab_layer = pcbnew.B_Fab if fp_side == 1 else pcbnew.F_Fab
+                    fab_xs: list[float] = []
+                    fab_ys: list[float] = []
+                    for gi in fp.GraphicalItems():
+                        if hasattr(gi, "GetText"):
+                            continue
+                        if gi.GetLayer() == fp_fab_layer:
+                            bb = gi.GetBoundingBox()
+                            fab_xs.extend(
+                                (pcbnew.ToMM(bb.GetLeft()), pcbnew.ToMM(bb.GetRight()))
+                            )
+                            fab_ys.extend(
+                                (pcbnew.ToMM(bb.GetTop()), pcbnew.ToMM(bb.GetBottom()))
+                            )
+                    if fab_xs and fab_ys:
+                        self.keepout[fp_side].append(
+                            (
+                                min(fab_xs) - 0.05,
+                                min(fab_ys) - 0.05,
+                                max(fab_xs) + 0.05,
+                                max(fab_ys) + 0.05,
+                            )
+                        )
+
+    def is_dense(
+        self, side: int, threshold_per_cm2: float = DENSE_THRESHOLD_PER_CM2
+    ) -> bool:
+        """Return True when footprint density on `side` warrants value-only passive labels."""
+        width = max(0.0, self.board_x1 - self.board_x0)
+        height = max(0.0, self.board_y1 - self.board_y0)
+        count = 0
+        for fp in self.footprints:
+            if is_fiducial_ref(fp.GetReference()) or is_mounting_hole(fp):
+                continue
+            fp_side = 1 if fp.IsFlipped() else 0
+            if fp_side == side or not is_smd_footprint(fp):
+                count += 1
+        area_cm2 = (width * height) / 100.0
+        if area_cm2 <= 0.0:
+            return count >= 35
+        return (count / area_cm2) >= threshold_per_cm2 or count >= 35
 
     def measure_text(
         self, text: str, height: float = SILK_HEIGHT, thickness: float = SILK_THICKNESS
@@ -266,6 +384,145 @@ def _configure_ref_field(
     ref_field.SetVisible(True)
 
 
+def _resolve_fp_side_and_center(
+    fp: pcbnew.FOOTPRINT,
+    side: int | None,
+    center: tuple[float, float] | None,
+) -> tuple[int, int, int, bool, float, float, float]:
+    if side is None:
+        side = 1 if fp.IsFlipped() else 0
+    silk_layer = pcbnew.B_SilkS if side == 1 else pcbnew.F_SilkS
+    fab_layer = pcbnew.B_Fab if side == 1 else pcbnew.F_Fab
+    mirrored = side == 1
+    sign = -1.0 if side == 1 else 1.0
+    if center is None:
+        pos = fp.GetPosition()
+        cx, cy = pcbnew.ToMM(pos.x), pcbnew.ToMM(pos.y)
+    else:
+        cx, cy = center
+    return side, silk_layer, fab_layer, mirrored, sign, cx, cy
+
+
+def _make_box(
+    cx: float, cy: float, w: float, h: float, deg: float
+) -> tuple[float, float, float, float]:
+    rw, rh = (h, w) if deg == 90.0 else (w, h)
+    return (cx - rw * 0.5, cy - rh * 0.5, cx + rw * 0.5, cy + rh * 0.5)
+
+
+def _candidate_grid_points(
+    cx: float,
+    cy: float,
+    fp_box: tuple[float, float, float, float],
+    limit: float,
+    step: float,
+    pad_margin: float,
+) -> list[tuple[float, float]]:
+    x_min = min(cx, fp_box[0]) - limit - pad_margin
+    x_max = max(cx, fp_box[2]) + limit + pad_margin
+    y_min = min(cy, fp_box[1]) - limit - pad_margin
+    y_max = max(cy, fp_box[3]) + limit + pad_margin
+    ix0 = math.floor((x_min - cx) / step)
+    ix1 = math.ceil((x_max - cx) / step)
+    iy0 = math.floor((y_min - cy) / step)
+    iy1 = math.ceil((y_max - cy) / step)
+    return [
+        (ix * step, iy * step)
+        for iy in range(iy0, iy1 + 1)
+        for ix in range(ix0, ix1 + 1)
+    ]
+
+
+def place_val_only(
+    grid: SilkGrid,
+    fp: pcbnew.FOOTPRINT,
+    val_text: str,
+    *,
+    side: int | None = None,
+    center: tuple[float, float] | None = None,
+    height: float = SILK_HEIGHT,
+    thickness: float = SILK_THICKNESS,
+    step: float = 0.30,
+    max_edge_distance: float | None = None,
+    compact: bool = True,
+    rotations: tuple[float, ...] = (0.0, 90.0),
+) -> tuple[float, float, float] | None:
+    """Place a single concise value token on SilkS within local tether distance, hiding Ref & Value on .Fab."""
+    side, silk_layer, fab_layer, mirrored, _, cx, cy = _resolve_fp_side_and_center(
+        fp, side, center
+    )
+    fp.Reference().SetLayer(fab_layer)
+    fp.Reference().SetVisible(False)
+    fp.Value().SetLayer(fab_layer)
+    fp.Value().SetVisible(False)
+
+    val_clean = val_text.strip()
+    if is_fiducial_ref(fp.GetReference()) or not val_clean:
+        return None
+
+    label = (
+        compact_passive_value(val_clean)
+        if compact and is_passive_ref(fp.GetReference())
+        else val_clean
+    )
+    if not label:
+        return None
+
+    fp_box = footprint_bbox(fp)
+    limit = (
+        max_edge_distance
+        if max_edge_distance is not None
+        else (MAX_SMD_TETHER_MM if is_smd_footprint(fp) else MAX_THT_TETHER_MM)
+    )
+    vw, vh = grid.measure_text(label, height, thickness)
+    pad_margin = max(vw, vh) * 0.5 + 0.2
+
+    candidates: list[
+        tuple[
+            float,
+            float,
+            float,
+            float,
+            int,
+            float,
+            float,
+            float,
+            tuple[float, float, float, float],
+        ]
+    ] = []
+    for dx, dy in _candidate_grid_points(cx, cy, fp_box, limit, step, pad_margin):
+        tx, ty = cx + dx, cy + dy
+        dist2 = dx * dx + dy * dy
+        for deg_idx, deg in enumerate(rotations):
+            if deg not in (0.0, 90.0):
+                raise ValueError(f"Unsupported rotation {deg}; expected 0.0 or 90.0")
+            vbox = _make_box(tx, ty, vw, vh, deg)
+            ed = box_edge_distance(fp_box, vbox)
+            if ed <= limit:
+                candidates.append(
+                    (round(ed, 4), dist2, abs(dy), abs(dx), deg_idx, tx, ty, deg, vbox)
+                )
+
+    candidates.sort()
+    for _, _, _, _, _, tx, ty, deg, vbox in candidates:
+        if grid.box_ok(side, *vbox):
+            add_silk_text(
+                fp,
+                silk_layer,
+                label,
+                tx,
+                ty,
+                deg,
+                height,
+                thickness,
+                mirrored,
+            )
+            grid.reserve(side, *vbox)
+            return (tx, ty, deg)
+
+    return None
+
+
 def place_ref_val_pair(
     grid: SilkGrid,
     fp: pcbnew.FOOTPRINT,
@@ -276,126 +533,250 @@ def place_ref_val_pair(
     height: float = SILK_HEIGHT,
     thickness: float = SILK_THICKNESS,
     gap: float = 0.35,
-    step: float = 0.65,
-    max_radius: float = 12.0,
+    step: float = 0.50,
+    max_radius: float = 6.0,
+    max_edge_distance: float | None = None,
+    val_only: bool | str = "auto",
+    compact_passives: bool = True,
+    allow_stacked: bool = True,
     rotations: tuple[float, ...] = (0.0, 90.0),
 ) -> tuple[float, float, float] | None:
-    """Place visible Reference + user-text Value on SilkS using a collision-free 2D offset grid.
+    """Place local Reference + Value (or value-only for passives on dense boards) on SilkS.
 
     Keeps fp.Value() hidden on .Fab, accounts for B.SilkS mirroring so <REF> <VAL>
-    always reads left-to-right, and reserves both bounding boxes in `grid`.
-    Returns (pair_cx, pair_cy, deg) on success, or None if no valid slot was found.
+    always reads left-to-right, and strictly enforces local tether bounds without
+    board-wide drift. Returns (cx, cy, deg) on success, or None if no local slot fits.
     """
-    if side is None:
-        side = 1 if fp.IsFlipped() else 0
-    silk_layer = pcbnew.B_SilkS if side == 1 else pcbnew.F_SilkS
-    fab_layer = pcbnew.B_Fab if side == 1 else pcbnew.F_Fab
-    mirrored = side == 1
-    sign = -1.0 if side == 1 else 1.0
-
+    side, silk_layer, fab_layer, mirrored, sign, cx, cy = _resolve_fp_side_and_center(
+        fp, side, center
+    )
     fp.Value().SetLayer(fab_layer)
     fp.Value().SetVisible(False)
 
-    if center is None:
-        pos = fp.GetPosition()
-        cx, cy = pcbnew.ToMM(pos.x), pcbnew.ToMM(pos.y)
-    else:
-        cx, cy = center
+    ref_str = fp.GetReference()
+    if is_fiducial_ref(ref_str):
+        fp.Reference().SetLayer(fab_layer)
+        fp.Reference().SetVisible(False)
+        return (cx, cy, 0.0)
 
-    rw, rh = grid.measure_text(fp.GetReference(), height, thickness)
-    vw, vh = grid.measure_text(val_text, height, thickness) if val_text else (0.0, 0.0)
+    is_passive = is_passive_ref(ref_str)
+    val_clean = val_text.strip()
+    base_limit = (
+        max_edge_distance
+        if max_edge_distance is not None
+        else (MAX_SMD_TETHER_MM if is_smd_footprint(fp) else MAX_THT_TETHER_MM)
+    )
+    limit = min(base_limit, max_radius) if max_edge_distance is None else base_limit
 
-    n = math.ceil(max_radius / step)
-    offsets: list[tuple[float, float]] = []
-    max_r2 = max_radius * max_radius + 1e-9
-    for iy in range(-n, n + 1):
-        dy = iy * step
-        for ix in range(-n, n + 1):
-            dx = ix * step
-            if dx * dx + dy * dy <= max_r2:
-                offsets.append((dx, dy))
-    offsets.sort(key=lambda d: (d[0] * d[0] + d[1] * d[1], abs(d[1]), abs(d[0])))
+    if val_only is True or (
+        val_only == "auto" and is_passive and bool(val_clean) and grid.is_dense(side)
+    ):
+        return place_val_only(
+            grid,
+            fp,
+            val_clean,
+            side=side,
+            center=(cx, cy),
+            height=height,
+            thickness=thickness,
+            step=min(step, 0.35),
+            max_edge_distance=limit,
+            compact=compact_passives,
+            rotations=rotations,
+        )
 
-    for dx, dy in offsets:
-        tx, ty = cx + dx, cy + dy
-        for deg in rotations:
-            if deg not in (0.0, 90.0):
-                raise ValueError(f"Unsupported rotation {deg}; expected 0.0 or 90.0")
-            if not val_text:
-                rw_r, rh_r = (rh, rw) if deg == 90.0 else (rw, rh)
-                rbox = (
-                    tx - rw_r * 0.5,
-                    ty - rh_r * 0.5,
-                    tx + rw_r * 0.5,
-                    ty + rh_r * 0.5,
-                )
-                if grid.box_ok(side, *rbox):
-                    _configure_ref_field(
-                        fp.Reference(),
-                        silk_layer,
-                        tx,
-                        ty,
-                        deg,
-                        height,
-                        thickness,
-                        mirrored,
+    fp_box = footprint_bbox(fp)
+
+    rw, rh = grid.measure_text(ref_str, height, thickness)
+    vw, vh = (
+        grid.measure_text(val_clean, height, thickness) if val_clean else (0.0, 0.0)
+    )
+    pad_margin = max(rw + vw + gap, rh + vh + gap) * 0.5 + 0.2
+
+    grid_pts = _candidate_grid_points(cx, cy, fp_box, limit, step, pad_margin)
+
+    if not val_clean:
+        ref_candidates: list[
+            tuple[
+                float,
+                float,
+                float,
+                float,
+                int,
+                float,
+                float,
+                float,
+                tuple[float, float, float, float],
+            ]
+        ] = []
+        for dx, dy in grid_pts:
+            tx, ty = cx + dx, cy + dy
+            dist2 = dx * dx + dy * dy
+            for deg_idx, deg in enumerate(rotations):
+                if deg not in (0.0, 90.0):
+                    raise ValueError(
+                        f"Unsupported rotation {deg}; expected 0.0 or 90.0"
                     )
-                    grid.reserve(side, *rbox)
-                    return (tx, ty, deg)
-                continue
-
-            if deg == 0.0:
-                ref_cx = tx - sign * (vw + gap) * 0.5
-                ref_cy = ty
-                val_cx = tx + sign * (rw + gap) * 0.5
-                val_cy = ty
-                rw_r, rh_r = rw, rh
-                vw_r, vh_r = vw, vh
-            else:
-                ref_cx = tx
-                ref_cy = ty + sign * (vw + gap) * 0.5
-                val_cx = tx
-                val_cy = ty - sign * (rw + gap) * 0.5
-                rw_r, rh_r = rh, rw
-                vw_r, vh_r = vh, vw
-
-            rbox = (
-                ref_cx - rw_r * 0.5,
-                ref_cy - rh_r * 0.5,
-                ref_cx + rw_r * 0.5,
-                ref_cy + rh_r * 0.5,
-            )
-            vbox = (
-                val_cx - vw_r * 0.5,
-                val_cy - vh_r * 0.5,
-                val_cx + vw_r * 0.5,
-                val_cy + vh_r * 0.5,
-            )
-            if grid.box_ok(side, *rbox) and grid.box_ok(side, *vbox):
+                rbox = _make_box(tx, ty, rw, rh, deg)
+                ed = box_edge_distance(fp_box, rbox)
+                if ed <= limit:
+                    ref_candidates.append(
+                        (
+                            round(ed, 4),
+                            dist2,
+                            abs(dy),
+                            abs(dx),
+                            deg_idx,
+                            tx,
+                            ty,
+                            deg,
+                            rbox,
+                        )
+                    )
+        ref_candidates.sort()
+        for _, _, _, _, _, tx, ty, deg, rbox in ref_candidates:
+            if grid.box_ok(side, *rbox):
                 _configure_ref_field(
                     fp.Reference(),
                     silk_layer,
-                    ref_cx,
-                    ref_cy,
-                    deg,
-                    height,
-                    thickness,
-                    mirrored,
-                )
-                add_silk_text(
-                    fp,
-                    silk_layer,
-                    val_text,
-                    val_cx,
-                    val_cy,
+                    tx,
+                    ty,
                     deg,
                     height,
                     thickness,
                     mirrored,
                 )
                 grid.reserve(side, *rbox)
-                grid.reserve(side, *vbox)
                 return (tx, ty, deg)
+        return None
+
+    pair_candidates: list[
+        tuple[
+            float,
+            float,
+            int,
+            int,
+            float,
+            float,
+            float,
+            float,
+            float,
+            float,
+            float,
+            float,
+            float,
+            tuple[float, float, float, float],
+            tuple[float, float, float, float],
+        ]
+    ] = []
+    styles = (0, 1) if allow_stacked else (0,)
+    for dx, dy in grid_pts:
+        tx, ty = cx + dx, cy + dy
+        dist2 = dx * dx + dy * dy
+        for deg_idx, deg in enumerate(rotations):
+            if deg not in (0.0, 90.0):
+                raise ValueError(f"Unsupported rotation {deg}; expected 0.0 or 90.0")
+            for style_idx in styles:
+                if style_idx == 0:
+                    if deg == 0.0:
+                        ref_cx, ref_cy = tx - sign * (vw + gap) * 0.5, ty
+                        val_cx, val_cy = tx + sign * (rw + gap) * 0.5, ty
+                    else:
+                        ref_cx, ref_cy = tx, ty + sign * (vw + gap) * 0.5
+                        val_cx, val_cy = tx, ty - sign * (rw + gap) * 0.5
+                else:
+                    if deg == 0.0:
+                        ref_cx, ref_cy = tx, ty - (vh + gap) * 0.5
+                        val_cx, val_cy = tx, ty + (rh + gap) * 0.5
+                    else:
+                        ref_cx, ref_cy = tx - (vh + gap) * 0.5, ty
+                        val_cx, val_cy = tx + (rh + gap) * 0.5, ty
+
+                rbox = _make_box(ref_cx, ref_cy, rw, rh, deg)
+                vbox = _make_box(val_cx, val_cy, vw, vh, deg)
+                ed = max(
+                    box_edge_distance(fp_box, rbox),
+                    box_edge_distance(fp_box, vbox),
+                )
+                if ed <= limit:
+                    pair_candidates.append(
+                        (
+                            round(ed, 4),
+                            dist2,
+                            style_idx,
+                            deg_idx,
+                            abs(dy),
+                            abs(dx),
+                            tx,
+                            ty,
+                            deg,
+                            ref_cx,
+                            ref_cy,
+                            val_cx,
+                            val_cy,
+                            rbox,
+                            vbox,
+                        )
+                    )
+
+    pair_candidates.sort()
+    for (
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        tx,
+        ty,
+        deg,
+        ref_cx,
+        ref_cy,
+        val_cx,
+        val_cy,
+        rbox,
+        vbox,
+    ) in pair_candidates:
+        if grid.box_ok(side, *rbox) and grid.box_ok(side, *vbox):
+            _configure_ref_field(
+                fp.Reference(),
+                silk_layer,
+                ref_cx,
+                ref_cy,
+                deg,
+                height,
+                thickness,
+                mirrored,
+            )
+            add_silk_text(
+                fp,
+                silk_layer,
+                val_clean,
+                val_cx,
+                val_cy,
+                deg,
+                height,
+                thickness,
+                mirrored,
+            )
+            grid.reserve(side, *rbox)
+            grid.reserve(side, *vbox)
+            return (tx, ty, deg)
+
+    if val_only == "auto" and is_passive:
+        return place_val_only(
+            grid,
+            fp,
+            val_clean,
+            side=side,
+            center=(cx, cy),
+            height=height,
+            thickness=thickness,
+            step=min(step, 0.35),
+            max_edge_distance=limit,
+            compact=compact_passives,
+            rotations=rotations,
+        )
 
     return None
 
@@ -424,44 +805,125 @@ def _bbox_tuple(item: pcbnew.BOARD_ITEM) -> tuple[float, float, float, float]:
     )
 
 
-def inspect_board_silk(pcb_path: pathlib.Path) -> None:
-    """Inspect reference visibility, text counts, keepout/edge hits, and text collisions."""
+def inspect_board_silk(
+    pcb_path: pathlib.Path,
+    *,
+    max_smd_tether: float = MAX_SMD_TETHER_MM,
+    max_tht_tether: float = MAX_THT_TETHER_MM,
+    max_pair_split: float = MAX_PAIR_SPLIT_MM,
+) -> bool:
+    """Inspect silkscreen labels, collisions, keepouts, tether drift, and split pairs."""
     board = pcbnew.LoadBoard(str(pcb_path))
     grid = SilkGrid(board)
     footprints = list(board.GetFootprints())
-    refs_visible = sum(
-        1
+    non_fid = [
+        fp
         for fp in footprints
-        if fp.Reference().IsVisible() and "Silk" in fp.Reference().GetLayerName()
-    )
-    vals_on_silk = sum(
-        1
-        for fp in footprints
-        if fp.Value().IsVisible() and "Silk" in fp.Value().GetLayerName()
-    )
+        if not is_fiducial_ref(fp.GetReference()) and not is_mounting_hole(fp)
+    ]
+
+    refs_visible = 0
+    vals_on_silk = 0
+    labeled = 0
+    unlabeled = 0
+    val_only_passives = 0
+    tether_violations = 0
+    split_pair_violations = 0
 
     silk_items: dict[int, list[tuple[str, tuple[float, float, float, float]]]] = {
         0: [],
         1: [],
     }
     silk_layers = (pcbnew.F_SilkS, pcbnew.B_SilkS)
+
     for fp in footprints:
-        for suffix, field in (("REF", fp.Reference()), ("VAL", fp.Value())):
-            if field.IsVisible() and field.GetLayer() in silk_layers:
-                side = 0 if field.GetLayer() == pcbnew.F_SilkS else 1
-                silk_items[side].append(
-                    (f"{fp.GetReference()}:{suffix}", _bbox_tuple(field))
-                )
+        ref = fp.GetReference()
+        is_fid = is_fiducial_ref(ref)
+        fp_box = footprint_bbox(fp)
+        limit = max_smd_tether if is_smd_footprint(fp) else max_tht_tether
+
+        has_ref = False
+        ref_side = -1
+        ref_box: tuple[float, float, float, float] | None = None
+        fp_texts: list[tuple[str, int, tuple[float, float, float, float]]] = []
+        user_texts: list[tuple[str, int, tuple[float, float, float, float]]] = []
+
+        ref_field = fp.Reference()
+        if ref_field.IsVisible() and ref_field.GetLayer() in silk_layers:
+            has_ref = True
+            ref_side = 0 if ref_field.GetLayer() == pcbnew.F_SilkS else 1
+            ref_box = _bbox_tuple(ref_field)
+            silk_items[ref_side].append((f"{ref}:REF", ref_box))
+            fp_texts.append(("REF", ref_side, ref_box))
+
+        val_field = fp.Value()
+        if val_field.IsVisible() and val_field.GetLayer() in silk_layers:
+            vals_on_silk += 1
+            vside = 0 if val_field.GetLayer() == pcbnew.F_SilkS else 1
+            vbox = _bbox_tuple(val_field)
+            silk_items[vside].append((f"{ref}:VAL", vbox))
+            fp_texts.append(("VAL", vside, vbox))
+
         for gi in fp.GraphicalItems():
             if (
                 hasattr(gi, "GetText")
                 and (not hasattr(gi, "IsVisible") or gi.IsVisible())
                 and gi.GetLayer() in silk_layers
             ):
-                side = 0 if gi.GetLayer() == pcbnew.F_SilkS else 1
-                silk_items[side].append(
-                    (f"{fp.GetReference()}:{gi.GetText()}", _bbox_tuple(gi))
+                gside = 0 if gi.GetLayer() == pcbnew.F_SilkS else 1
+                gbox = _bbox_tuple(gi)
+                gtext = gi.GetText()
+                silk_items[gside].append((f"{ref}:{gtext}", gbox))
+                fp_texts.append((gtext, gside, gbox))
+                user_texts.append((gtext, gside, gbox))
+
+        if is_fid:
+            if fp_texts:
+                print(f"  WARNING: Fiducial {ref} has visible silkscreen text")
+            continue
+        if is_mounting_hole(fp):
+            continue
+
+        if has_ref:
+            refs_visible += 1
+        if has_ref or user_texts:
+            labeled += 1
+            if is_passive_ref(ref) and not has_ref and user_texts:
+                val_only_passives += 1
+        else:
+            unlabeled += 1
+            pos = fp.GetPosition()
+            print(
+                f"  UNLABELED: {ref} at "
+                f"({pcbnew.ToMM(pos.x):.2f}, {pcbnew.ToMM(pos.y):.2f})"
+            )
+
+        for lbl, tside, tbox in fp_texts:
+            ed = box_edge_distance(fp_box, tbox)
+            if ed > limit:
+                tether_violations += 1
+                print(
+                    f"  TETHER DRIFT side={tside}: {ref}:{lbl} is {ed:.2f} mm "
+                    f"from {ref} (max {limit:.1f} mm)"
                 )
+
+        if has_ref and ref_box is not None and user_texts:
+            polarity_tokens = {"+", "-", "1", "K", "A"}
+            same_side_uts = [
+                ut_box
+                for ut_text, ut_side, ut_box in user_texts
+                if ut_side == ref_side and ut_text.strip().upper() not in polarity_tokens
+            ]
+            if same_side_uts:
+                pair_gap = min(
+                    box_edge_distance(ref_box, ut_box) for ut_box in same_side_uts
+                )
+                if pair_gap > max_pair_split:
+                    split_pair_violations += 1
+                    print(
+                        f"  SPLIT PAIR side={ref_side}: {ref} REF and VAL separated "
+                        f"by {pair_gap:.2f} mm (max {max_pair_split:.1f} mm)"
+                    )
 
     for dr in board.GetDrawings():
         if (
@@ -508,15 +970,43 @@ def inspect_board_silk(pcb_path: pathlib.Path) -> None:
                 print(f"  OUT OF BOUNDS side={side}: {name} {(x0, y0, x1, y1)}")
 
     print(f"Silkscreen Inspection: {pcb_path.name}")
-    print(f"  Footprints:       {len(footprints)}")
-    print(f"  Refs on SilkS:    {refs_visible}/{len(footprints)}")
-    print(f"  Values on Silk:   {vals_on_silk}")
+    print(f"  Footprints:         {len(footprints)} ({len(non_fid)} non-fiducial)")
     print(
-        f"  F.SilkS texts:    {len(silk_items[0])} | B.SilkS texts: {len(silk_items[1])}"
+        f"  Labeled on SilkS:   {labeled}/{len(non_fid)} "
+        f"({refs_visible} with REF, {val_only_passives} value-only passives)"
     )
-    print(f"  Text overlaps:    {overlaps}")
-    print(f"  Keepout/pad hits: {keepout_hits}")
-    print(f"  Out-of-bounds:    {oob_hits}")
+    print(f"  Unlabeled parts:    {unlabeled}")
+    print(f"  Raw Values on Silk: {vals_on_silk}")
+    print(
+        f"  F.SilkS texts:      {len(silk_items[0])} | B.SilkS texts: {len(silk_items[1])}"
+    )
+    print(f"  Text overlaps:      {overlaps}")
+    print(f"  Keepout/pad hits:   {keepout_hits}")
+    print(f"  Out-of-bounds:      {oob_hits}")
+    print(f"  Tether drift hits:  {tether_violations}")
+    print(f"  Split pair hits:    {split_pair_violations}")
+
+    failures: list[str] = []
+    if unlabeled:
+        failures.append(f"{unlabeled} unlabeled")
+    if vals_on_silk:
+        failures.append(f"{vals_on_silk} raw values on silk")
+    if overlaps:
+        failures.append(f"{overlaps} overlaps")
+    if keepout_hits:
+        failures.append(f"{keepout_hits} keepout hits")
+    if oob_hits:
+        failures.append(f"{oob_hits} out-of-bounds")
+    if tether_violations:
+        failures.append(f"{tether_violations} tether drift")
+    if split_pair_violations:
+        failures.append(f"{split_pair_violations} split pairs")
+
+    if failures:
+        print(f"  RESULT: FAIL ({', '.join(failures)})")
+        return False
+    print("  RESULT: PASS")
+    return True
 
 
 def main() -> None:
@@ -526,8 +1016,38 @@ def main() -> None:
     parser.add_argument(
         "--inspect", type=pathlib.Path, required=True, help="Path to .kicad_pcb file"
     )
+    parser.add_argument(
+        "--max-smd-tether",
+        type=float,
+        default=MAX_SMD_TETHER_MM,
+        help=f"Max mm from SMD footprint edge to its silkscreen text (default: {MAX_SMD_TETHER_MM})",
+    )
+    parser.add_argument(
+        "--max-tht-tether",
+        type=float,
+        default=MAX_THT_TETHER_MM,
+        help=f"Max mm from THT footprint edge to its silkscreen text (default: {MAX_THT_TETHER_MM})",
+    )
+    parser.add_argument(
+        "--max-pair-split",
+        type=float,
+        default=MAX_PAIR_SPLIT_MM,
+        help=f"Max mm between REF and VAL texts in a pair (default: {MAX_PAIR_SPLIT_MM})",
+    )
+    parser.add_argument(
+        "--no-fail",
+        action="store_true",
+        help="Always exit 0 even when silkscreen inspection finds violations.",
+    )
     args = parser.parse_args()
-    inspect_board_silk(args.inspect)
+    ok = inspect_board_silk(
+        args.inspect,
+        max_smd_tether=args.max_smd_tether,
+        max_tht_tether=args.max_tht_tether,
+        max_pair_split=args.max_pair_split,
+    )
+    if not ok and not args.no_fail:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

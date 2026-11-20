@@ -29,7 +29,7 @@ Use this workflow when turning a KiCad `.net` netlist into a fully placed, route
    - Mark optional / unpopulated parts (e.g., `TP1`–`TP8`, `dnp=True`, or by passing `dnp_prefixes=("TP",)` to `parse_netlist()`) with `fp.SetDNP(True)` and `fp.SetExcludedFromBOM(True)`.
 
 4. **Plan Eurorack / 2-layer sandwich placement**:
-   Place panel-mounted controls on `F.Cu` aligned to panel bushing coordinates (applying footprint-origin-to-bushing mechanical offsets), and place headers, test points, and SMDs on `B.Cu`. See [routing_and_dfm_patterns.md](./references/routing_and_dfm_patterns.md).
+   Place panel-mounted controls on `F.Cu` aligned to panel bushing coordinates (applying footprint-origin-to-bushing mechanical offsets), and place headers, test points, and SMDs on `B.Cu`. Leave `>= 1.5–2.0 mm` silkscreen label corridors between SMD passive rows and adjacent IC/THT keepouts so local labels stay within `3.5 mm` tether bounds. See [routing_and_dfm_patterns.md](./references/routing_and_dfm_patterns.md).
 
 5. **Route with DFM-safe rules and pour `GND` zones**:
    - Pre-place immediate `GND` stitching vias for every `B.Cu` SMD `GND` pad before signal routing so signal traces never box in ground pads.
@@ -40,7 +40,7 @@ Use this workflow when turning a KiCad `.net` netlist into a fully placed, route
    - Call `board.BuildConnectivity()` **both before and after** `pcbnew.ZONE_FILLER(board).Fill(board.Zones())` with `ISLAND_REMOVAL_MODE_ALWAYS`.
 
 6. **Apply silkscreen & fab notes**:
-   Pair layout generation with the [`kicad-silkscreen-markup`](../kicad-silkscreen-markup/SKILL.md) workflow so all references, values, polarity markings, QR placeholders, and `B.Fab` notes are placed without collisions.
+   Pair layout generation with the [`kicad-silkscreen-markup`](../kicad-silkscreen-markup/SKILL.md) workflow using density-adaptive labeling (concise value-only tokens for `R*`/`C*` passives on dense sides, `<REF> + <VAL>` for active, polarized, and interface parts), polarity markings, QR placeholders, and `B.Fab` notes with strict local tethering (never use board-wide fallback scans).
 
 ## Mandatory Verification Sequence
 
@@ -54,18 +54,22 @@ python3 generate_pcb.py
 # 2. KiCad DRC (with zone refill)
 kicad-cli pcb drc --refill-zones --format json --output /tmp/drc.json Board.kicad_pcb
 
-# 3. Eurorack mechanical check (if applicable)
+# 3. Silkscreen tether-drift, keepout, and collision inspection
+python3 .agents/skills/kicad-silkscreen-markup/scripts/silk_annotator.py --inspect Board.kicad_pcb
+
+# 4. Eurorack mechanical check (if applicable)
 python3 .agents/skills/eurorack-panel/scripts/generate_eurorack_panel.py --main-pcb Board.kicad_pcb --inspect
 
-# 4. Full KiCad PCB static/DFM analysis
+# 5. Full KiCad PCB static/DFM analysis
 python3 .agents/skills/kicad/scripts/analyze_pcb.py Board.kicad_pcb --full --output /tmp/pcb_analysis.json
 
-# 5. Visual inspection of top and bottom 3D renders
+# 6. Visual inspection of top and bottom 3D renders
 kicad-cli pcb render --side top -o /tmp/top.png --width 1200 --height 1600 --background transparent Board.kicad_pcb
 kicad-cli pcb render --side bottom -o /tmp/bottom.png --width 1200 --height 1600 --background transparent Board.kicad_pcb
 ```
 
 Confirm:
 - DRC reports `0` violations, `0` unconnected items, and `0` schematic parity issues.
+- `silk_annotator.py --inspect` exits `0` with `RESULT: PASS` (`0` tether drift, `0` split pairs, `0` overlaps, `0` keepout hits).
 - PCB analyzer reports `routing_complete: true`, `unrouted_net_count: 0`, `0` errors, and `0` `VP-001` via-in-pad warnings.
 - Rendered top/bottom PNGs show legible text, tented vias, clean clearances, and expected side placement.
