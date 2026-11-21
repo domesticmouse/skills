@@ -124,20 +124,47 @@ def parse_netlist(
                     fields[fname] = fval
 
         dnp = False
+        exclude_from_bom = False
+        exclude_from_pos = False
         for prop in _find_children(comp, "property"):
             pname = _find_child(prop, "name")
             pval = _find_child(prop, "value")
-            if pname and pval and len(pname) >= 2 and len(pval) >= 2:
-                fields[pname[1]] = pval[1]
-                if pname[1].lower() == "dnp" and pval[1].lower() in (
-                    "1",
-                    "true",
-                    "yes",
-                    "dnp",
-                ):
-                    dnp = True
+            if pname and len(pname) >= 2:
+                key = pname[1]
+                key_l = key.lower()
+                if pval and len(pval) >= 2:
+                    val = pval[1]
+                    fields[key] = val
+                    val_l = val.strip().lower()
+                    if key_l == "dnp" and val_l in ("", "1", "true", "yes", "dnp"):
+                        dnp = True
+                    elif key_l == "exclude_from_bom" and val_l in (
+                        "",
+                        "1",
+                        "true",
+                        "yes",
+                    ):
+                        exclude_from_bom = True
+                    elif key_l == "exclude_from_pos_files" and val_l in (
+                        "",
+                        "1",
+                        "true",
+                        "yes",
+                    ):
+                        exclude_from_pos = True
+                else:
+                    if key_l == "dnp":
+                        dnp = True
+                    elif key_l == "exclude_from_bom":
+                        exclude_from_bom = True
+                    elif key_l == "exclude_from_pos_files":
+                        exclude_from_pos = True
         if _find_child(comp, "dnp") is not None:
             dnp = True
+        if _find_child(comp, "exclude_from_bom") is not None:
+            exclude_from_bom = True
+        if _find_child(comp, "exclude_from_pos_files") is not None:
+            exclude_from_pos = True
         if "DNP" in fields.get("Notes", "") or (
             dnp_prefixes and ref.startswith(dnp_prefixes)
         ):
@@ -150,6 +177,8 @@ def parse_netlist(
             "tstamp": tstamp,
             "fields": fields,
             "dnp": dnp,
+            "exclude_from_bom": exclude_from_bom or dnp,
+            "exclude_from_pos_files": exclude_from_pos or dnp,
         }
 
     nets: list[dict] = []
@@ -276,6 +305,14 @@ def create_base_board(
     return board
 
 
+def get_footprint_field(fp: pcbnew.FOOTPRINT, field_name: str) -> str:
+    """Return trimmed text of custom footprint field `field_name`, or empty string."""
+    for fld in fp.GetFields():
+        if fld.GetName() == field_name:
+            return fld.GetText().strip()
+    return ""
+
+
 def populate_footprints(
     board: pcbnew.BOARD,
     components: dict[str, dict],
@@ -310,20 +347,72 @@ def populate_footprints(
         fp.SetPath(pcbnew.KIID_PATH(f"/{comp['tstamp']}"))
 
         for k, v in comp["fields"].items():
-            if k.lower() != "dnp":
+            if k.lower() not in ("dnp", "exclude_from_bom", "exclude_from_pos_files"):
                 fp.SetField(k, v)
         for fld in fp.GetFields():
             fld.SetVisible(False)
         fp.Value().SetVisible(False)
         fp.Reference().SetVisible(True)
 
-        if comp["dnp"]:
+        is_fid = ref.strip().upper().startswith("FID")
+        if comp["dnp"] or is_fid:
             fp.SetDNP(True)
             fp.SetExcludedFromBOM(True)
+            fp.SetExcludedFromPosFiles(True)
+        else:
+            if comp.get("exclude_from_bom"):
+                fp.SetExcludedFromBOM(True)
+            if comp.get("exclude_from_pos_files"):
+                fp.SetExcludedFromPosFiles(True)
+
+        if is_fid:
+            fab_layer = pcbnew.B_Fab if is_back else pcbnew.F_Fab
+            fp.Reference().SetLayer(fab_layer)
+            fp.Reference().SetVisible(False)
+            fp.Value().SetLayer(fab_layer)
+            fp.Value().SetVisible(False)
 
         footprints[ref] = fp
 
     return footprints
+
+
+def add_fiducials(
+    board: pcbnew.BOARD,
+    fiducials: dict[str, tuple[float, float]],
+    *,
+    is_back: bool = True,
+    fp_name: str = "Fiducial_1mm_Mask2mm",
+    fp_dir: pathlib.Path = FP_DIR,
+) -> dict[str, pcbnew.FOOTPRINT]:
+    """Load and place optical fiducials (not in netlist) with DNP/BOM/Pos exclusions."""
+    fids: dict[str, pcbnew.FOOTPRINT] = {}
+    lib_path = str(fp_dir / "Fiducial.pretty")
+    fab_layer = pcbnew.B_Fab if is_back else pcbnew.F_Fab
+    for ref, (fx, fy) in fiducials.items():
+        fp = pcbnew.FootprintLoad(lib_path, fp_name)
+        if fp is None:
+            raise RuntimeError(f"Failed to load Fiducial:{fp_name} from {lib_path}")
+        board.Add(fp)
+        fp.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(fx), pcbnew.FromMM(fy)))
+        if is_back:
+            fp.Flip(fp.GetPosition(), False)
+        fp.SetOrientationDegrees(0.0)
+        fp.SetReference(ref)
+        fp.SetValue("Fiducial")
+        fp.SetDNP(True)
+        fp.SetExcludedFromBOM(True)
+        fp.SetExcludedFromPosFiles(True)
+        for fld in fp.GetFields():
+            fld.SetVisible(False)
+        fp.Reference().SetLayer(fab_layer)
+        fp.Reference().SetVisible(False)
+        fp.Value().SetLayer(fab_layer)
+        fp.Value().SetVisible(False)
+        for pad in fp.Pads():
+            pad.SetNetCode(0)
+        fids[ref] = fp
+    return fids
 
 
 def assign_nets(
@@ -482,6 +571,30 @@ class GridRouter:
                     self.static_block[layer][idx] = 1
                     if block_via:
                         self.via_block[idx] = 1
+
+    def mark_static_rect(
+        self,
+        layer: int,
+        x0: float,
+        y0: float,
+        x1: float,
+        y1: float,
+        margin: float = 0.0,
+        block_via: bool = False,
+    ) -> None:
+        rx0, rx1 = min(x0, x1) - margin, max(x0, x1) + margin
+        ry0, ry1 = min(y0, y1) - margin, max(y0, y1) + margin
+        gx0 = max(0, math.floor((rx0 - self.x0) / self.step))
+        gx1 = min(self.nx - 1, math.ceil((rx1 - self.x0) / self.step))
+        gy0 = max(0, math.floor((ry0 - self.y0) / self.step))
+        gy1 = min(self.ny - 1, math.ceil((ry1 - self.y0) / self.step))
+        for gy in range(gy0, gy1 + 1):
+            row = gy * self.nx
+            for gx in range(gx0, gx1 + 1):
+                idx = row + gx
+                self.static_block[layer][idx] = 1
+                if block_via:
+                    self.via_block[idx] = 1
 
     def mark_pad_box(
         self,

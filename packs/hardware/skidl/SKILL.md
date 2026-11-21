@@ -20,21 +20,19 @@ SKiDL is a Python library for describing electronic circuits as code and outputt
   uv venv --clear --python 3.14 .venv
   uv pip install skidl
   ```
-* **Pre-Import Environment Variables (Sandbox & macOS Paths)**: Importing `skidl` immediately initializes `SkidlConfig` and `matplotlib`, which attempt to create `~/Library/Application Support/skidl` and `~/.matplotlib`. In restricted sandboxes or macOS environments without shell-exported KiCad variables, configure these **before** importing `skidl`:
+* **Pre-Import Environment Variables & CWD Pinning (Sandbox & macOS Paths)**: Importing `skidl` (`3.0.0`) immediately initializes `SkidlConfig` and `matplotlib` (creating `~/Library/Application Support/skidl` and `~/.matplotlib`), emits startup warnings if `KICAD6`–`KICAD9_SYMBOL_DIR` are unset, and writes `<script>.log`/`.erc` into `os.getcwd()`. Pin CWD to the script directory and configure env vars **before** importing `skidl`:
   ```python
   import os
+  from pathlib import Path
 
+  os.chdir(Path(__file__).resolve().parent)
   os.environ.setdefault("XDG_DATA_HOME", "/tmp/xdg_data")
   os.environ.setdefault("MPLCONFIGDIR", "/tmp/mpl_config")
   if os.path.isdir("/Applications/KiCad/KiCad.app/Contents/SharedSupport/symbols"):
-      os.environ.setdefault(
-          "KICAD10_SYMBOL_DIR",
-          "/Applications/KiCad/KiCad.app/Contents/SharedSupport/symbols",
-      )
-      os.environ.setdefault(
-          "KICAD_SYMBOL_DIR",
-          "/Applications/KiCad/KiCad.app/Contents/SharedSupport/symbols",
-      )
+      sym_dir = "/Applications/KiCad/KiCad.app/Contents/SharedSupport/symbols"
+      os.environ.setdefault("KICAD_SYMBOL_DIR", sym_dir)
+      for _ver in (6, 7, 8, 9, 10):
+          os.environ.setdefault(f"KICAD{_ver}_SYMBOL_DIR", sym_dir)
   if os.path.isdir("/Applications/KiCad/KiCad.app/Contents/SharedSupport/footprints"):
       os.environ.setdefault(
           "KICAD10_FOOTPRINT_DIR",
@@ -65,7 +63,8 @@ from skidl import *
 search("linear regulator 3.3V")
 
 # Inspect exact pin numbers, names, and electrical types of a symbol
-show("Regulator_Linear", "AMS1117-3.3")
+# (show() returns a Part object and prints nothing under `python -c` unless wrapped in print())
+print(show("Regulator_Linear", "AMS1117-3.3"))
 
 # Search footprints across .pretty libraries
 search_footprints("SOT-223")
@@ -159,7 +158,8 @@ Choose the output method that matches the user's workflow (by default, export th
 # In KiCad PCB Editor (pcbnew): File -> Import -> Netlist... -> Update PCB
 generate_netlist(file_="my_board.net")
 
-# 2. XML BOM (.xml)
+# 2. XML BOM (.xml) — Note: SKiDL 3.0.0 emits malformed XML (part=""..."" + raw S-expr <fields>);
+# do not pass *_bom.xml to strict XML parsers — consume .net and jlcpcb_bom.csv downstream instead.
 generate_xml(file_="my_board_bom.xml")
 
 # 3. Direct KiCad PCB (.kicad_pcb) — Optional
@@ -175,13 +175,13 @@ generate_dot(file_="circuit.dot")
 ```
 
 * **JLCPCB PCBA BOM & Live LCSC Part Search**:
-  * To verify live JLCPCB stock, Basic vs. Extended library status (`$0` vs. `$3` feeder setup fee), and unit pricing before assigning LCSC part numbers, run [jlcpcb_search.py](./scripts/jlcpcb_search.py):
+  * To verify live JLCPCB stock, Basic vs. Extended library status (`$0` vs. `$3` feeder setup fee), datasheet links (`dataManualUrl`), and unit pricing before assigning LCSC part numbers, run [jlcpcb_search.py](./scripts/jlcpcb_search.py) (supports `--basic`, `-o/--output`, and `--delay` for multi-part BOM batches):
     ```bash
-    python3 .agents/skills/skidl/scripts/jlcpcb_search.py --in-stock-only "100k 0603" "TL074 SOIC-14"
+    python3 .agents/skills/skidl/scripts/jlcpcb_search.py --in-stock-only --basic --delay 0.3 -o /tmp/jlc_parts.json "100k 0603" "TL074 SOIC-14"
     ```
   * To export a grouped 4-column JLCPCB BOM CSV (`Comment,Designator,Footprint,LCSC Part #`) or download offline catalog databases (`yaqwsx/jlcparts`, `CDFER/jlcpcb-parts-database`), read [JLCPCB PCBA BOM & Catalog Integration](./references/jlcpcb_bom.md).
 * **Post-Export Verification Checklist**:
-  1. Confirm `ERC()` reported `0 errors, 0 warnings` in stdout and `<script>.log`.
+  1. Confirm `ERC()` reported `0 errors, 0 warnings` in stdout and `<script>.erc` (note that SKiDL `3.0.0` still emits benign startup notices such as `fp-lib-table` or empty-root-tag warnings in `<script>.log` even when `.erc` is clean—confirm `.log` has no `Can't open file` or component errors).
   2. Verify `<script>.net` contains no `(lib "NO_LIB")` fallback entries (which indicate symbol files were unreadable inside a sandbox).
   3. Verify every row in `jlcpcb_bom.csv` has non-empty `Footprint` and `LCSC Part #` values.
 

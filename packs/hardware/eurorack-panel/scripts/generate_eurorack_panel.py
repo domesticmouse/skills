@@ -21,6 +21,8 @@ Usage:
       --drc
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import math
@@ -998,6 +1000,7 @@ def run_drc_check(pcb_path: pathlib.Path) -> tuple[int, int]:
             str(KICAD_CLI),
             "pcb",
             "drc",
+            "--severity-all",
             "--refill-zones",
             "--format",
             "json",
@@ -1010,10 +1013,15 @@ def run_drc_check(pcb_path: pathlib.Path) -> tuple[int, int]:
         stderr=subprocess.DEVNULL,
     )
     data = json.loads(drc_json.read_text(encoding="utf-8"))
-    non_lib = [
-        v for v in data.get("violations", []) if v.get("type") != "lib_footprint_issues"
-    ]
+    all_violations = data.get("violations", [])
+    lib_issues = [v for v in all_violations if v.get("type") == "lib_footprint_issues"]
+    non_lib = [v for v in all_violations if v.get("type") != "lib_footprint_issues"]
     unconnected = data.get("unconnected_items", [])
+    if lib_issues:
+        print(
+            f"  DRC Note: filtered {len(lib_issues)} lib_footprint_issues warning(s) "
+            "(inline panel footprints)."
+        )
     for v in non_lib:
         print(f"  DRC Violation: [{v.get('severity')}] {v.get('description')}")
     for u in unconnected:

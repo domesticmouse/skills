@@ -1,12 +1,14 @@
 # KiCad 10 `pcbnew` Python API Reference & Pitfalls
 
-Practical notes verified against KiCad `10.0.1` on macOS.
+Practical notes verified against KiCad `10.0.x` on macOS.
 
 ## 1. Self-Bootstrapping KiCad Python
 
 System Python and project virtualenvs cannot import `pcbnew` directly unless KiCad's Python interpreter is used. Put this block at the top of any standalone PCB script before importing `pcbnew`:
 
 ```python
+from __future__ import annotations
+
 import os
 import pathlib
 import sys
@@ -30,6 +32,13 @@ FP_DIR = pathlib.Path("/Applications/KiCad/KiCad.app/Contents/SharedSupport/foot
 ```
 
 Load any footprint with `pcbnew.FootprintLoad(str(FP_DIR / f"{lib}.pretty"), fp_name)`.
+
+### Python `3.9` Runtime Compatibility
+
+KiCad 10 on macOS bundles **Python `3.9.13`**, while project `.venv` environments typically run Python `3.12+`:
+- Always include `from __future__ import annotations` at the top of KiCad-bootstrapped scripts so `X | Y` type annotations evaluate lazily without `TypeError`.
+- Avoid Python `3.10+` stdlib features such as `itertools.pairwise` (which `ruff` rule `RUF007` recommends on newer Python targets, causing `ImportError` inside KiCad Python).
+- Lint KiCad-bootstrapped scripts with `ruff check --target-version py39` (or mark deliberate index loops `# noqa: RUF007`).
 
 ## 2. Board Initialization & Avoiding `Flip()` Segfaults
 
@@ -59,6 +68,12 @@ else:
 | `pcbnew.GR_TEXT_H_JUSTIFY_CENTER` | `pcbnew.GR_TEXT_H_ALIGN_CENTER` |
 | `pcbnew.GR_TEXT_V_JUSTIFY_CENTER` | `pcbnew.GR_TEXT_V_ALIGN_CENTER` |
 | `pcbnew.PCB_FP_TEXT_T` | Identify footprint text via `hasattr(item, "GetText")` or `isinstance(item, pcbnew.PCB_TEXT)` |
+| `pad.GetZoneConnection()` / `SetZoneConnection(...)` | `pad.GetLocalZoneConnection()` / `pad.SetLocalZoneConnection(pcbnew.ZONE_CONNECTION_THERMAL)` |
+| `fp.GetFieldByName("Silkscreen")` | Iterate `fp.GetFields()` matching `fld.GetName() == name` (or `get_footprint_field(fp, name)`) |
+| `dr.IsFilled()` | `dr.GetFillMode() == pcbnew.FILL_T_FILLED_SHAPE` (`FILL_T_NO_FILL == 1` is truthy—never use `bool(dr.GetFillMode())`) |
+| `pad.GetLocalSolderMaskMargin()` -> `int` | Returns `None` when inheriting board defaults; call `pad.GetSolderMaskExpansion(pcbnew.B_Mask)` / `F_Mask` (layer required) or fall back to `ds.m_SolderMaskExpansion` |
+| `item.GetLayerName() == "B.SilkS"` | `GetLayerName()` returns canonical `"B.Silkscreen"` / `"F.Silkscreen"`; compare numeric layer IDs (`item.GetLayer() in (pcbnew.F_SilkS, pcbnew.B_SilkS)`) |
+| `via.GetWidth()` | Pass a copper layer argument (`via.GetWidth(pcbnew.B_Cu)`) to avoid KiCad's wx assert warning |
 
 ## 4. `lib_footprint_issues` in Sandbox / Headless DRC
 
@@ -66,11 +81,13 @@ If you call `fp.SetFPID(pcbnew.LIB_ID(lib, fp_name))`, `kicad-cli pcb drc` looks
 
 ## 5. DNP Flags, Zone Fills, and Connectivity
 
-- Mark unpopulated components (`TP*`, optional test headers) using both flags:
+- Mark unpopulated components (`TP*`, optional test headers) and optical fiducials (`FID*`) using **all three** flags so neither `TP*` nor `FID*` leak into `kicad-cli pcb export pos --smd-only --exclude-dnp`:
   ```python
   fp.SetDNP(True)
   fp.SetExcludedFromBOM(True)
+  fp.SetExcludedFromPosFiles(True)
   ```
+- Note that SKiDL `3.0.0` emits valueless `(property (name "dnp"))` and `(property (name "exclude_from_bom"))` nodes in `.net` files (without a `(value ...)` child), so netlist parsers must treat `(property (name "dnp"))` as `True` even without `(value ...)`.
 - When pouring `GND` copper zones (`pcbnew.ZONE`):
   - Enable island removal if available (`zone.SetIslandRemovalMode(pcbnew.ISLAND_REMOVAL_MODE_ALWAYS)`) to eliminate floating dead-copper islands.
   - Call `board.BuildConnectivity()` **before and after** `pcbnew.ZONE_FILLER(board).Fill(board.Zones())`. Skipping either call can leave stale ratsnest connections or DRC `unconnected_items` on `Zone [GND]`.

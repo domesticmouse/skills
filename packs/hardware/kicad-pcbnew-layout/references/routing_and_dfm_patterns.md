@@ -26,6 +26,14 @@ On dense mixed-signal boards with SOIC-14 op-amps (`U1`/`U2`) flanked closely by
    Connect `U1.4 <-> C5`, `U1.11 <-> C6`, `U2.4 <-> C7`, and `U2.11 <-> C8` directly on `B.Cu` at power trace width (`0.30 mm`) and merge those pairs into connected clusters before A* runs.
 4. **Prioritize Constricted IC Breakout Nets**:
    Horizontally pre-routed `-12V` decoupling traces above narrow IC-to-passive channels can bottleneck adjacent IC pins (`U1.12` / `U1.14` / `U2.13`). Route constrained IC breakout nets (`is_pwr = -1`) first, then power rails (`is_pwr = 0`, `0.30 mm`), then general signal nets (`is_pwr = 1`, `0.25 mm`) sorted by bounding-box span.
+5. **Prune Unreferenced Pre-Placed Vias Post-MST**:
+   After routing each net, remove any pre-placed decoupling or supply lift `PCB_VIA` (and its dead stub tracks if unused on both layers) that was never tapped by an MST branch on the opposite layer (`0` `via_dangling`).
+6. **Emit Pad-to-Grid Stubs Only for Consumed MST Anchors**:
+   When adjacent pins are bridged directly (e.g., `U2.13`–`U2.14`) or already merged into a cluster before A*, emit pad-to-grid stubs only if an MST branch actually references that pad anchor (`0` `track_dangling`).
+7. **Restrict Priority `-1` Breakout Tier to Local IC Escape Nets**:
+   Limit `is_pwr = -1` strictly to short, constricted local IC escape nets; giving board-spanning (`70–90 mm`) nets priority `-1` lets them snake across tight corridors early and box in nearby pads.
+8. **Block `5 × 5 mm` QR Placeholder Zone (`±0.5 mm`) in Routing & Via Stitching**:
+   Reserve `QR_BOX` (`±0.5 mm` margin) in `via_block` and `static_block[side]` for **each** side carrying a QR placeholder (`layer=0` for `F.SilkS` and `layer=1` for `B.SilkS`, e.g., via `router.mark_static_rect(side, *QR_BOX, margin=0.5, block_via=True)`) before signal routing and board-wide `GND` via-stitching grids so no via or same-side copper track lands under a QR silkscreen square.
 
 ## 3. Preventing `VP-001` (Via-in-Pad) & `holes_co_located`
 

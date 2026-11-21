@@ -9,6 +9,7 @@ import os
 import pathlib
 import re
 import sys
+from collections.abc import Sequence
 
 KICAD_PYTHON = pathlib.Path(
     "/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3"
@@ -45,7 +46,10 @@ def is_mounting_hole(fp: pcbnew.FOOTPRINT) -> bool:
 
 def is_passive_ref(ref: str) -> bool:
     """Return True for fixed resistors/capacitors (R*/C*), excluding potentiometers (RV*)."""
-    return bool(re.match(r"^[RC]\d+$", ref.strip().upper()))
+    clean = ref.strip().upper()
+    return not clean.startswith("RV") and bool(
+        re.match(r"^[RC](?:\d+[A-Za-z0-9_]*|_[A-Za-z0-9_]+)$", clean)
+    )
 
 
 def compact_passive_value(val_text: str) -> str:
@@ -111,8 +115,88 @@ def extract_pad_geometry(
     return cx, cy, cx - bw * 0.5, cy - bh * 0.5, cx + bw * 0.5, cy + bh * 0.5, layers
 
 
+def board_edge_bounds(board: pcbnew.BOARD) -> tuple[float, float, float, float]:
+    """Return board outline (x0, y0, x1, y1) in mm inset by Edge.Cuts half stroke width."""
+    xs: list[int] = []
+    ys: list[int] = []
+    items: list[pcbnew.BOARD_ITEM] = list(board.GetDrawings())
+    for fp in board.GetFootprints():
+        items.extend(fp.GraphicalItems())
+    for item in items:
+        if item.GetLayer() != pcbnew.Edge_Cuts or hasattr(item, "GetText"):
+            continue
+        bb = item.GetBoundingBox()
+        hw = item.GetWidth() // 2 if hasattr(item, "GetWidth") else 0
+        left = bb.GetLeft() + hw
+        right = bb.GetRight() - hw
+        top = bb.GetTop() + hw
+        bottom = bb.GetBottom() - hw
+        if left <= right and top <= bottom:
+            xs.extend((left, right))
+            ys.extend((top, bottom))
+        else:
+            xs.extend((bb.GetLeft(), bb.GetRight()))
+            ys.extend((bb.GetTop(), bb.GetBottom()))
+    if xs and ys:
+        return (
+            pcbnew.ToMM(min(xs)),
+            pcbnew.ToMM(min(ys)),
+            pcbnew.ToMM(max(xs)),
+            pcbnew.ToMM(max(ys)),
+        )
+    ebb = board.GetBoardEdgesBoundingBox()
+    return (
+        pcbnew.ToMM(ebb.GetLeft()),
+        pcbnew.ToMM(ebb.GetTop()),
+        pcbnew.ToMM(ebb.GetRight()),
+        pcbnew.ToMM(ebb.GetBottom()),
+    )
+
+
+def _pad_mask_margin_mm(
+    pad: pcbnew.PAD, mask_layer: int, default_margin: float = 0.05
+) -> float:
+    """Return effective solder-mask expansion in mm for `pad` on `mask_layer`."""
+    if hasattr(pad, "GetSolderMaskExpansion"):
+        try:
+            exp = pad.GetSolderMaskExpansion(mask_layer)
+            if exp is not None:
+                return max(0.0, pcbnew.ToMM(exp))
+        except TypeError:
+            pass
+    local = pad.GetLocalSolderMaskMargin()
+    if local is not None:
+        return max(0.0, pcbnew.ToMM(local))
+    return default_margin
+
+
+def get_fp_silkscreen_field(fp: pcbnew.FOOTPRINT) -> tuple[str, str]:
+    """Derive (full_label, secondary_value_or_func) from footprint `Silkscreen` field or Value."""
+    ref = fp.GetReference().strip()
+    spec = ""
+    for fld in fp.GetFields():
+        if fld.GetName() == "Silkscreen":
+            spec = fld.GetText().strip()
+            break
+    if spec:
+        tokens = spec.split(None, 1)
+        if tokens[0].upper() == ref.upper():
+            rest = tokens[1] if len(tokens) > 1 else ""
+            if is_passive_ref(ref):
+                val = rest or fp.GetValue().strip()
+                return (val, val)
+            return (spec, rest)
+        if is_passive_ref(ref):
+            return (spec, spec)
+        return (f"{ref} {spec}".strip(), spec)
+    val = fp.GetValue().strip()
+    if is_passive_ref(ref):
+        return (val, val)
+    return (f"{ref} {val}".strip(), val)
+
+
 class SilkGrid:
-    """Tracks pad/mask keepouts, footprint outlines, SMD .Fab bodies, board margins, and placed silk."""
+    """Tracks pad/mask keepouts, footprint outlines, SMD/THT .Fab bodies, board margins, and placed silk."""
 
     def __init__(
         self,
@@ -121,6 +205,7 @@ class SilkGrid:
         board_bounds: tuple[float, float, float, float] | None = None,
         edge_clearance: float = SILK_EDGE_CLEARANCE,
         block_smd_fab: bool = True,
+        block_tht_fab: bool = True,
     ) -> None:
         self.board = board
         self.edge_clearance = edge_clearance
@@ -129,11 +214,9 @@ class SilkGrid:
         self.keepout: list[list[tuple[float, float, float, float]]] = [[], []]
 
         if board_bounds is None:
-            ebb = board.GetBoardEdgesBoundingBox()
-            self.board_x0 = pcbnew.ToMM(ebb.GetLeft())
-            self.board_y0 = pcbnew.ToMM(ebb.GetTop())
-            self.board_x1 = pcbnew.ToMM(ebb.GetRight())
-            self.board_y1 = pcbnew.ToMM(ebb.GetBottom())
+            self.board_x0, self.board_y0, self.board_x1, self.board_y1 = (
+                board_edge_bounds(board)
+            )
         else:
             self.board_x0, self.board_y0, self.board_x1, self.board_y1 = board_bounds
 
@@ -143,6 +226,12 @@ class SilkGrid:
             else list(board.GetFootprints())
         )
         self.footprints = fp_list
+        ds = board.GetDesignSettings()
+        board_mask = (
+            pcbnew.ToMM(ds.m_SolderMaskExpansion)
+            if hasattr(ds, "m_SolderMaskExpansion") and ds.m_SolderMaskExpansion > 0
+            else 0.05
+        )
         pad_pad = 0.25
         silk_pad = 0.20
         for fp in fp_list:
@@ -150,13 +239,11 @@ class SilkGrid:
                 _, _, x0, y0, x1, y1, layers = extract_pad_geometry(pad)
                 lset = pad.GetLayerSet()
                 if 0 in layers or lset.Contains(pcbnew.F_Mask):
-                    self.keepout[0].append(
-                        (x0 - pad_pad, y0 - pad_pad, x1 + pad_pad, y1 + pad_pad)
-                    )
+                    exp0 = _pad_mask_margin_mm(pad, pcbnew.F_Mask, board_mask) + pad_pad
+                    self.keepout[0].append((x0 - exp0, y0 - exp0, x1 + exp0, y1 + exp0))
                 if 1 in layers or lset.Contains(pcbnew.B_Mask):
-                    self.keepout[1].append(
-                        (x0 - pad_pad, y0 - pad_pad, x1 + pad_pad, y1 + pad_pad)
-                    )
+                    exp1 = _pad_mask_margin_mm(pad, pcbnew.B_Mask, board_mask) + pad_pad
+                    self.keepout[1].append((x0 - exp1, y0 - exp1, x1 + exp1, y1 + exp1))
             for gi in fp.GraphicalItems():
                 if hasattr(gi, "GetText"):
                     continue
@@ -173,7 +260,7 @@ class SilkGrid:
                         pcbnew.ToMM(bb.GetBottom()) + silk_pad,
                     )
                 )
-            if block_smd_fab:
+            if block_smd_fab or block_tht_fab:
                 fp_side = 1 if fp.IsFlipped() else 0
                 if is_fiducial_ref(fp.GetReference()):
                     pos = fp.GetPosition()
@@ -181,7 +268,10 @@ class SilkGrid:
                     self.keepout[fp_side].append(
                         (fx - 1.25, fy - 1.25, fx + 1.25, fy + 1.25)
                     )
-                elif is_smd_footprint(fp):
+                elif not is_mounting_hole(fp) and (
+                    (block_smd_fab and is_smd_footprint(fp))
+                    or (block_tht_fab and not is_smd_footprint(fp))
+                ):
                     fp_fab_layer = pcbnew.B_Fab if fp_side == 1 else pcbnew.F_Fab
                     fab_xs: list[float] = []
                     fab_ys: list[float] = []
@@ -325,7 +415,12 @@ def add_silk_rect(
 
 
 def add_silk_dot(
-    board: pcbnew.BOARD, layer_id: int, cx: float, cy: float, radius: float = 0.25
+    board: pcbnew.BOARD,
+    layer_id: int,
+    cx: float,
+    cy: float,
+    radius: float = 0.25,
+    width: float = 0.15,
 ) -> None:
     """Draw a filled circular silkscreen dot (e.g. Pin-1 marker)."""
     shp = pcbnew.PCB_SHAPE(board)
@@ -333,7 +428,7 @@ def add_silk_dot(
     shp.SetLayer(layer_id)
     shp.SetCenter(pcbnew.VECTOR2I(pcbnew.FromMM(cx), pcbnew.FromMM(cy)))
     shp.SetEnd(pcbnew.VECTOR2I(pcbnew.FromMM(cx + radius), pcbnew.FromMM(cy)))
-    shp.SetWidth(pcbnew.FromMM(0.15))
+    shp.SetWidth(pcbnew.FromMM(width))
     shp.SetFilled(True)
     board.Add(shp)
 
@@ -355,6 +450,228 @@ def add_silk_seg(
     shp.SetEnd(pcbnew.VECTOR2I(pcbnew.FromMM(x1), pcbnew.FromMM(y1)))
     shp.SetWidth(pcbnew.FromMM(width))
     board.Add(shp)
+
+
+def place_silk_dot(
+    grid: SilkGrid,
+    board: pcbnew.BOARD,
+    side: int,
+    targets: tuple[float, float] | Sequence[tuple[float, float]],
+    *,
+    radius: float = 0.25,
+    width: float = 0.15,
+    max_search: float = 1.0,
+    step: float = 0.15,
+) -> tuple[float, float] | None:
+    """Place a filled Pin-1 silkscreen dot verified clear in `grid` and reserve its bbox."""
+    silk_layer = pcbnew.B_SilkS if side == 1 else pcbnew.F_SilkS
+    if (
+        isinstance(targets, tuple)
+        and len(targets) == 2
+        and isinstance(targets[0], (int, float))
+    ):
+        target_list: list[tuple[float, float]] = [
+            (float(targets[0]), float(targets[1]))
+        ]
+    else:
+        target_list = [(float(tx), float(ty)) for tx, ty in targets]
+
+    half_bb = radius + width * 0.5
+    r_steps = math.ceil(max_search / step) if step > 0 else 0
+    for tx0, ty0 in target_list:
+        candidates: list[tuple[float, float, float]] = []
+        for iy in range(-r_steps, r_steps + 1):
+            cy = ty0 + iy * step
+            for ix in range(-r_steps, r_steps + 1):
+                cx = tx0 + ix * step
+                d2 = (cx - tx0) ** 2 + (cy - ty0) ** 2
+                if d2 <= max_search * max_search + 1e-9:
+                    candidates.append((d2, cx, cy))
+        candidates.sort()
+        for _, cx, cy in candidates:
+            box = (cx - half_bb, cy - half_bb, cx + half_bb, cy + half_bb)
+            if grid.box_ok(side, *box):
+                add_silk_dot(board, silk_layer, cx, cy, radius=radius, width=width)
+                grid.reserve(side, *box)
+                return (cx, cy)
+    return None
+
+
+def place_silk_seg(
+    grid: SilkGrid,
+    board: pcbnew.BOARD,
+    side: int,
+    x0: float,
+    y0: float,
+    x1: float,
+    y1: float,
+    *,
+    width: float = 0.25,
+) -> bool:
+    """Place a silkscreen line segment if clear in `grid` and reserve its bbox."""
+    silk_layer = pcbnew.B_SilkS if side == 1 else pcbnew.F_SilkS
+    hw = width * 0.5
+    box = (min(x0, x1) - hw, min(y0, y1) - hw, max(x0, x1) + hw, max(y0, y1) + hw)
+    if not grid.box_ok(side, *box):
+        return False
+    add_silk_seg(board, silk_layer, x0, y0, x1, y1, width=width)
+    grid.reserve(side, *box)
+    return True
+
+
+def _rect_perimeter_boxes(
+    rx0: float, ry0: float, rx1: float, ry1: float, hw: float
+) -> tuple[tuple[float, float, float, float], ...]:
+    """Return the 4 stroke edge bounding boxes of an unfilled axis-aligned rectangle."""
+    return (
+        (rx0 - hw, ry0 - hw, rx1 + hw, ry0 + hw),
+        (rx0 - hw, ry1 - hw, rx1 + hw, ry1 + hw),
+        (rx0 - hw, ry0 - hw, rx0 + hw, ry1 + hw),
+        (rx1 - hw, ry0 - hw, rx1 + hw, ry1 + hw),
+    )
+
+
+def place_silk_rect(
+    grid: SilkGrid,
+    board: pcbnew.BOARD,
+    side: int,
+    x0: float,
+    y0: float,
+    x1: float,
+    y1: float,
+    *,
+    filled: bool = True,
+    width: float = 0.15,
+    reserve_margin: float = 0.0,
+) -> bool:
+    """Place a silkscreen rectangle (e.g. JLCPCB QR placeholder) if clear in `grid`."""
+    silk_layer = pcbnew.B_SilkS if side == 1 else pcbnew.F_SilkS
+    hw = width * 0.5
+    rx0, rx1 = min(x0, x1), max(x0, x1)
+    ry0, ry1 = min(y0, y1), max(y0, y1)
+    if filled:
+        boxes: tuple[tuple[float, float, float, float], ...] = (
+            (rx0 - hw, ry0 - hw, rx1 + hw, ry1 + hw),
+        )
+    else:
+        boxes = _rect_perimeter_boxes(rx0, ry0, rx1, ry1, hw)
+    if not all(grid.box_ok(side, *b) for b in boxes):
+        return False
+    add_silk_rect(board, silk_layer, rx0, ry0, rx1, ry1, filled=filled, width=width)
+    for b in boxes:
+        grid.reserve(
+            side,
+            b[0] - reserve_margin,
+            b[1] - reserve_margin,
+            b[2] + reserve_margin,
+            b[3] + reserve_margin,
+        )
+    return True
+
+
+def place_board_label(
+    grid: SilkGrid,
+    parent: pcbnew.BOARD | pcbnew.FOOTPRINT,
+    side: int,
+    text: str,
+    *,
+    fp: pcbnew.FOOTPRINT | None = None,
+    target: tuple[float, float] | None = None,
+    height: float = SILK_HEIGHT,
+    thickness: float = SILK_THICKNESS,
+    max_distance: float = 6.0,
+    step: float = 0.25,
+    rotations: tuple[float, ...] = (0.0, 90.0),
+) -> tuple[float, float, float] | None:
+    """Place a grid-checked auxiliary label near `fp`, near `target`, or on open board silk."""
+    clean = text.strip()
+    if not clean:
+        return None
+    silk_layer = pcbnew.B_SilkS if side == 1 else pcbnew.F_SilkS
+    mirrored = side == 1
+    tw, th = grid.measure_text(clean, height, thickness)
+    candidates: list[
+        tuple[float, float, int, float, float, float, tuple[float, float, float, float]]
+    ] = []
+
+    if target is not None:
+        tx0, ty0 = target
+        r_steps = math.ceil(max_distance / step) if step > 0 else 0
+        for iy in range(-r_steps, r_steps + 1):
+            ty = ty0 + iy * step
+            for ix in range(-r_steps, r_steps + 1):
+                tx = tx0 + ix * step
+                d2 = (tx - tx0) ** 2 + (ty - ty0) ** 2
+                if d2 <= max_distance * max_distance + 1e-9:
+                    for deg_idx, deg in enumerate(rotations):
+                        if deg not in (0.0, 90.0):
+                            raise ValueError(
+                                f"Unsupported rotation {deg}; expected 0.0 or 90.0"
+                            )
+                        box = _make_box(tx, ty, tw, th, deg)
+                        candidates.append(
+                            (d2, abs(ty - ty0), deg_idx, tx, ty, deg, box)
+                        )
+    elif fp is not None:
+        fp_box = footprint_bbox(fp)
+        pos = fp.GetPosition()
+        cx, cy = pcbnew.ToMM(pos.x), pcbnew.ToMM(pos.y)
+        pad_margin = max(tw, th) * 0.5 + 0.25
+        for dx, dy in _candidate_grid_points(
+            cx, cy, fp_box, max_distance, step, pad_margin
+        ):
+            tx, ty = cx + dx, cy + dy
+            d2 = dx * dx + dy * dy
+            for deg_idx, deg in enumerate(rotations):
+                if deg not in (0.0, 90.0):
+                    raise ValueError(
+                        f"Unsupported rotation {deg}; expected 0.0 or 90.0"
+                    )
+                box = _make_box(tx, ty, tw, th, deg)
+                ed = box_edge_distance(fp_box, box)
+                if ed <= max_distance:
+                    candidates.append((round(ed, 4), d2, deg_idx, tx, ty, deg, box))
+    else:
+        cx_mid = (grid.board_x0 + grid.board_x1) * 0.5
+        scan_step = max(step, 0.5)
+        x_step = max(step * 4.0, 1.0)
+        for deg_idx, deg in enumerate(rotations):
+            if deg not in (0.0, 90.0):
+                raise ValueError(f"Unsupported rotation {deg}; expected 0.0 or 90.0")
+            bw, bh = (th, tw) if deg == 90.0 else (tw, th)
+            y_start = grid.board_y0 + grid.edge_clearance + bh * 0.5
+            y_end = grid.board_y1 - grid.edge_clearance - bh * 0.5
+            x_min = grid.board_x0 + grid.edge_clearance + bw * 0.5
+            x_max = grid.board_x1 - grid.edge_clearance - bw * 0.5
+            if y_start > y_end + 1e-6 or x_min > x_max + 1e-6:
+                continue
+            max_x_off = max(0.0, (x_max - x_min) * 0.5)
+            x_offsets = [0.0]
+            k = 1
+            while k * x_step <= max_x_off + 1e-6:
+                off = k * x_step
+                x_offsets.extend((-off, off))
+                k += 1
+            iy = 0
+            while y_start + iy * scan_step <= y_end + 1e-6:
+                ty = y_start + iy * scan_step
+                for x_off in x_offsets:
+                    tx = cx_mid + x_off
+                    box = _make_box(tx, ty, tw, th, deg)
+                    candidates.append(
+                        (round(ty, 4), abs(x_off), deg_idx, tx, ty, deg, box)
+                    )
+                iy += 1
+
+    candidates.sort()
+    for _, _, _, tx, ty, deg, box in candidates:
+        if grid.box_ok(side, *box):
+            add_silk_text(
+                parent, silk_layer, clean, tx, ty, deg, height, thickness, mirrored
+            )
+            grid.reserve(side, *box)
+            return (tx, ty, deg)
+    return None
 
 
 _add_silk_text = add_silk_text
@@ -536,6 +853,7 @@ def place_ref_val_pair(
     step: float = 0.50,
     max_radius: float = 6.0,
     max_edge_distance: float | None = None,
+    max_pair_split: float = MAX_PAIR_SPLIT_MM,
     val_only: bool | str = "auto",
     compact_passives: bool = True,
     allow_stacked: bool = True,
@@ -763,6 +1081,159 @@ def place_ref_val_pair(
             grid.reserve(side, *vbox)
             return (tx, ty, deg)
 
+    if allow_stacked:
+        val_slots: list[
+            tuple[
+                float,
+                float,
+                int,
+                float,
+                float,
+                float,
+                tuple[float, float, float, float],
+            ]
+        ] = []
+        for dx, dy in grid_pts:
+            vx, vy = cx + dx, cy + dy
+            dist2 = dx * dx + dy * dy
+            for deg_idx, deg in enumerate(rotations):
+                vbox = _make_box(vx, vy, vw, vh, deg)
+                ved = box_edge_distance(fp_box, vbox)
+                if ved <= limit and grid.box_ok(side, *vbox):
+                    val_slots.append((round(ved, 4), dist2, deg_idx, vx, vy, deg, vbox))
+        val_slots.sort()
+
+        rstep = min(step, 0.25)
+        min_clear = min(0.20, gap)
+        shifted_candidates: list[
+            tuple[
+                float,
+                int,
+                float,
+                float,
+                int,
+                float,
+                float,
+                float,
+                float,
+                float,
+                tuple[float, float, float, float],
+                tuple[float, float, float, float],
+            ]
+        ] = []
+        best_ed: float | None = None
+        for ved, _, deg_idx, vx, vy, deg, vbox in val_slots[:200]:
+            if best_ed is not None and ved > best_ed:
+                break
+            rw_rot, rh_rot = (rh, rw) if deg == 90.0 else (rw, rh)
+            rx_min = vbox[0] - max_pair_split - rw_rot * 0.5
+            rx_max = vbox[2] + max_pair_split + rw_rot * 0.5
+            ry_min = vbox[1] - max_pair_split - rh_rot * 0.5
+            ry_max = vbox[3] + max_pair_split + rh_rot * 0.5
+
+            probe_pts: set[tuple[float, float]] = set()
+            ix0 = math.floor((rx_min - vx) / rstep)
+            ix1 = math.ceil((rx_max - vx) / rstep)
+            iy0 = math.floor((ry_min - vy) / rstep)
+            iy1 = math.ceil((ry_max - vy) / rstep)
+            for iy in range(iy0, iy1 + 1):
+                for ix in range(ix0, ix1 + 1):
+                    probe_pts.add(
+                        (round(vx + ix * rstep, 4), round(vy + iy * rstep, 4))
+                    )
+            if deg == 0.0:
+                stack_dy = (rh + vh) * 0.5 + gap
+                for ix in range(ix0, ix1 + 1):
+                    for y_off in (-stack_dy, stack_dy):
+                        probe_pts.add((round(vx + ix * rstep, 4), round(vy + y_off, 4)))
+            else:
+                stack_dx = (rh + vh) * 0.5 + gap
+                for iy in range(iy0, iy1 + 1):
+                    for x_off in (-stack_dx, stack_dx):
+                        probe_pts.add((round(vx + x_off, 4), round(vy + iy * rstep, 4)))
+
+            for rx, ry in probe_pts:
+                rbox = _make_box(rx, ry, rw, rh, deg)
+                if not (
+                    rbox[2] + min_clear <= vbox[0]
+                    or rbox[0] - min_clear >= vbox[2]
+                    or rbox[3] + min_clear <= vbox[1]
+                    or rbox[1] - min_clear >= vbox[3]
+                ):
+                    continue
+                pair_gap = box_edge_distance(rbox, vbox)
+                if pair_gap > max_pair_split:
+                    continue
+                red = box_edge_distance(fp_box, rbox)
+                if red <= limit and grid.box_ok(side, *rbox):
+                    cand_ed = round(max(ved, red), 4)
+                    if deg == 0.0:
+                        natural = (ry < vy - 1e-4) or (
+                            abs(ry - vy) <= (rh + vh) * 0.5 and (vx - rx) * sign > 1e-4
+                        )
+                    else:
+                        natural = (rx < vx - 1e-4) or (
+                            abs(rx - vx) <= (rh + vh) * 0.5 and (ry - vy) * sign > 1e-4
+                        )
+                    order_pen = 0 if natural else 1
+                    best_ed = cand_ed if best_ed is None else min(best_ed, cand_ed)
+                    shifted_candidates.append(
+                        (
+                            cand_ed,
+                            order_pen,
+                            round(pair_gap, 4),
+                            (rx - vx) ** 2 + (ry - vy) ** 2,
+                            deg_idx,
+                            rx,
+                            ry,
+                            vx,
+                            vy,
+                            deg,
+                            rbox,
+                            vbox,
+                        )
+                    )
+
+        shifted_candidates.sort()
+        for (
+            _,
+            _,
+            _,
+            _,
+            _,
+            ref_cx,
+            ref_cy,
+            val_cx,
+            val_cy,
+            deg,
+            rbox,
+            vbox,
+        ) in shifted_candidates:
+            _configure_ref_field(
+                fp.Reference(),
+                silk_layer,
+                ref_cx,
+                ref_cy,
+                deg,
+                height,
+                thickness,
+                mirrored,
+            )
+            add_silk_text(
+                fp,
+                silk_layer,
+                val_clean,
+                val_cx,
+                val_cy,
+                deg,
+                height,
+                thickness,
+                mirrored,
+            )
+            grid.reserve(side, *rbox)
+            grid.reserve(side, *vbox)
+            return ((ref_cx + val_cx) * 0.5, (ref_cy + val_cy) * 0.5, deg)
+
     if val_only == "auto" and is_passive:
         return place_val_only(
             grid,
@@ -805,6 +1276,79 @@ def _bbox_tuple(item: pcbnew.BOARD_ITEM) -> tuple[float, float, float, float]:
     )
 
 
+def _boxes_overlap(
+    a: tuple[float, float, float, float],
+    b: tuple[float, float, float, float],
+    eps: float = 1e-4,
+) -> bool:
+    return not (
+        a[2] <= b[0] + eps
+        or b[2] <= a[0] + eps
+        or a[3] <= b[1] + eps
+        or b[3] <= a[1] + eps
+    )
+
+
+def _segment_intersects_box(
+    ax: float,
+    ay: float,
+    bx: float,
+    by: float,
+    box: tuple[float, float, float, float],
+) -> bool:
+    """Return True if segment (ax, ay)-(bx, by) intersects axis-aligned `box`."""
+    x0, y0, x1, y1 = box
+    dx, dy = bx - ax, by - ay
+    t0, t1 = 0.0, 1.0
+    for p, q in ((-dx, ax - x0), (dx, x1 - ax), (-dy, ay - y0), (dy, y1 - ay)):
+        if abs(p) <= 1e-12:
+            if q < 0.0:
+                return False
+        else:
+            r = q / p
+            if p < 0.0:
+                if r > t1:
+                    return False
+                t0 = max(t0, r)
+            else:
+                if r < t0:
+                    return False
+                t1 = min(t1, r)
+    return t0 <= t1
+
+
+def _shape_check_boxes(
+    dr: pcbnew.BOARD_ITEM, sbox: tuple[float, float, float, float]
+) -> tuple[tuple[float, float, float, float], ...]:
+    """Return perimeter edge boxes for unfilled rectangles, or `(sbox,)` otherwise."""
+    if (
+        hasattr(dr, "GetShape")
+        and dr.GetShape() == pcbnew.SHAPE_T_RECT
+        and hasattr(dr, "GetFillMode")
+        and dr.GetFillMode() != pcbnew.FILL_T_FILLED_SHAPE
+    ):
+        hw = pcbnew.ToMM(dr.GetWidth()) * 0.5 if hasattr(dr, "GetWidth") else 0.0
+        rx0, ry0, rx1, ry1 = sbox[0] + hw, sbox[1] + hw, sbox[2] - hw, sbox[3] - hw
+        if rx0 <= rx1 and ry0 <= ry1:
+            return _rect_perimeter_boxes(rx0, ry0, rx1, ry1, hw)
+    return (sbox,)
+
+
+def _is_qr_placeholder(
+    dr: pcbnew.BOARD_ITEM, sbox: tuple[float, float, float, float]
+) -> bool:
+    """Return True if `dr` is a filled ~5x5 mm silkscreen square QR placeholder."""
+    if not hasattr(dr, "GetShape") or dr.GetShape() != pcbnew.SHAPE_T_RECT:
+        return False
+    if not (
+        hasattr(dr, "GetFillMode") and dr.GetFillMode() == pcbnew.FILL_T_FILLED_SHAPE
+    ):
+        return False
+    w = sbox[2] - sbox[0]
+    h = sbox[3] - sbox[1]
+    return 4.0 <= w <= 8.0 and 4.0 <= h <= 8.0 and abs(w - h) <= 0.5
+
+
 def inspect_board_silk(
     pcb_path: pathlib.Path,
     *,
@@ -812,7 +1356,7 @@ def inspect_board_silk(
     max_tht_tether: float = MAX_THT_TETHER_MM,
     max_pair_split: float = MAX_PAIR_SPLIT_MM,
 ) -> bool:
-    """Inspect silkscreen labels, collisions, keepouts, tether drift, and split pairs."""
+    """Inspect silkscreen labels, graphics, collisions, keepouts, QR zones, tether drift, and split pairs."""
     board = pcbnew.LoadBoard(str(pcb_path))
     grid = SilkGrid(board)
     footprints = list(board.GetFootprints())
@@ -831,6 +1375,12 @@ def inspect_board_silk(
     split_pair_violations = 0
 
     silk_items: dict[int, list[tuple[str, tuple[float, float, float, float]]]] = {
+        0: [],
+        1: [],
+    }
+    silk_shapes: dict[
+        int, list[tuple[str, tuple[float, float, float, float], pcbnew.BOARD_ITEM]]
+    ] = {
         0: [],
         1: [],
     }
@@ -912,7 +1462,8 @@ def inspect_board_silk(
             same_side_uts = [
                 ut_box
                 for ut_text, ut_side, ut_box in user_texts
-                if ut_side == ref_side and ut_text.strip().upper() not in polarity_tokens
+                if ut_side == ref_side
+                and ut_text.strip().upper() not in polarity_tokens
             ]
             if same_side_uts:
                 pair_gap = min(
@@ -926,34 +1477,58 @@ def inspect_board_silk(
                     )
 
     for dr in board.GetDrawings():
-        if (
-            hasattr(dr, "GetText")
-            and (not hasattr(dr, "IsVisible") or dr.IsVisible())
-            and dr.GetLayer() in silk_layers
-        ):
-            side = 0 if dr.GetLayer() == pcbnew.F_SilkS else 1
-            silk_items[side].append((f"BOARD:{dr.GetText()}", _bbox_tuple(dr)))
+        if dr.GetLayer() not in silk_layers:
+            continue
+        side = 0 if dr.GetLayer() == pcbnew.F_SilkS else 1
+        if hasattr(dr, "GetText"):
+            if not hasattr(dr, "IsVisible") or dr.IsVisible():
+                silk_items[side].append((f"BOARD:{dr.GetText()}", _bbox_tuple(dr)))
+        else:
+            shape_lbl = (
+                dr.GetShapeStr() if hasattr(dr, "GetShapeStr") else type(dr).__name__
+            )
+            silk_shapes[side].append((f"BOARD_SHAPE:{shape_lbl}", _bbox_tuple(dr), dr))
 
     overlaps = 0
     keepout_hits = 0
     oob_hits = 0
+    qr_copper_hits = 0
+    eps = 1e-4
     has_edges = grid.board_x1 > grid.board_x0 and grid.board_y1 > grid.board_y0
+    all_tracks = list(board.GetTracks())
 
     for side in (0, 1):
         items = silk_items[side]
+        shapes = silk_shapes[side]
         for i in range(len(items)):
             n1, b1 = items[i]
             for j in range(i + 1, len(items)):
                 n2, b2 = items[j]
-                if not (
-                    b1[2] <= b2[0] or b2[2] <= b1[0] or b1[3] <= b2[1] or b2[3] <= b1[1]
-                ):
+                if _boxes_overlap(b1, b2, eps):
                     overlaps += 1
                     print(f"  OVERLAP side={side}: {n1} {b1} vs {n2} {b2}")
 
-        for name, (x0, y0, x1, y1) in items:
+        for sname, sbox, dr in shapes:
+            cboxes = _shape_check_boxes(dr, sbox)
+            for tname, tbox in items:
+                if any(_boxes_overlap(cb, tbox, eps) for cb in cboxes):
+                    overlaps += 1
+                    print(
+                        f"  SHAPE/TEXT OVERLAP side={side}: {sname} {sbox} vs {tname} {tbox}"
+                    )
+
+        check_entries: list[
+            tuple[
+                str,
+                tuple[float, float, float, float],
+                tuple[tuple[float, float, float, float], ...],
+            ]
+        ] = [(name, tbox, (tbox,)) for name, tbox in items] + [
+            (sn, sb, _shape_check_boxes(dr, sb)) for sn, sb, dr in shapes
+        ]
+        for name, (x0, y0, x1, y1), cboxes in check_entries:
             for kx0, ky0, kx1, ky1 in grid.keepout[side]:
-                if not (x1 <= kx0 or x0 >= kx1 or y1 <= ky0 or y0 >= ky1):
+                if any(_boxes_overlap(cb, (kx0, ky0, kx1, ky1), eps) for cb in cboxes):
                     keepout_hits += 1
                     print(
                         f"  KEEPOUT HIT side={side}: {name} {(x0, y0, x1, y1)} "
@@ -961,13 +1536,60 @@ def inspect_board_silk(
                     )
                     break
             if has_edges and (
-                x0 < grid.board_x0 + grid.edge_clearance
-                or x1 > grid.board_x1 - grid.edge_clearance
-                or y0 < grid.board_y0 + grid.edge_clearance
-                or y1 > grid.board_y1 - grid.edge_clearance
+                x0 < grid.board_x0 + grid.edge_clearance - eps
+                or x1 > grid.board_x1 - grid.edge_clearance + eps
+                or y0 < grid.board_y0 + grid.edge_clearance - eps
+                or y1 > grid.board_y1 - grid.edge_clearance + eps
             ):
                 oob_hits += 1
                 print(f"  OUT OF BOUNDS side={side}: {name} {(x0, y0, x1, y1)}")
+
+        cu_layer = pcbnew.B_Cu if side == 1 else pcbnew.F_Cu
+        for sname, sbox, dr in shapes:
+            if not _is_qr_placeholder(dr, sbox):
+                continue
+            for tr in all_tracks:
+                if isinstance(tr, pcbnew.PCB_VIA):
+                    if hasattr(tr, "IsOnLayer") and not tr.IsOnLayer(cu_layer):
+                        continue
+                    pos = tr.GetPosition()
+                    vx, vy = pcbnew.ToMM(pos.x), pcbnew.ToMM(pos.y)
+                    vr = pcbnew.ToMM(tr.GetWidth(cu_layer)) * 0.5
+                    dx = max(sbox[0] - vx, 0.0, vx - sbox[2])
+                    dy = max(sbox[1] - vy, 0.0, vy - sbox[3])
+                    if math.hypot(dx, dy) < vr - eps:
+                        qr_copper_hits += 1
+                        print(
+                            f"  QR VIA HIT side={side}: via at ({vx:.2f}, {vy:.2f}) r={vr:.2f} inside {sname} {sbox}"
+                        )
+                elif tr.GetLayer() == cu_layer:
+                    if hasattr(pcbnew, "PCB_ARC") and isinstance(tr, pcbnew.PCB_ARC):
+                        if _boxes_overlap(_bbox_tuple(tr), sbox, eps):
+                            qr_copper_hits += 1
+                            print(
+                                f"  QR TRACK HIT side={side}: arc {_bbox_tuple(tr)} inside {sname} {sbox}"
+                            )
+                    else:
+                        sp = tr.GetStart()
+                        ep = tr.GetEnd()
+                        hw = max(0.0, pcbnew.ToMM(tr.GetWidth()) * 0.5 - eps)
+                        exp_box = (
+                            sbox[0] - hw,
+                            sbox[1] - hw,
+                            sbox[2] + hw,
+                            sbox[3] + hw,
+                        )
+                        if _segment_intersects_box(
+                            pcbnew.ToMM(sp.x),
+                            pcbnew.ToMM(sp.y),
+                            pcbnew.ToMM(ep.x),
+                            pcbnew.ToMM(ep.y),
+                            exp_box,
+                        ):
+                            qr_copper_hits += 1
+                            print(
+                                f"  QR TRACK HIT side={side}: track ({pcbnew.ToMM(sp.x):.2f},{pcbnew.ToMM(sp.y):.2f})->({pcbnew.ToMM(ep.x):.2f},{pcbnew.ToMM(ep.y):.2f}) inside {sname} {sbox}"
+                            )
 
     print(f"Silkscreen Inspection: {pcb_path.name}")
     print(f"  Footprints:         {len(footprints)} ({len(non_fid)} non-fiducial)")
@@ -980,9 +1602,13 @@ def inspect_board_silk(
     print(
         f"  F.SilkS texts:      {len(silk_items[0])} | B.SilkS texts: {len(silk_items[1])}"
     )
-    print(f"  Text overlaps:      {overlaps}")
+    print(
+        f"  F.SilkS shapes:     {len(silk_shapes[0])} | B.SilkS shapes: {len(silk_shapes[1])}"
+    )
+    print(f"  Text/shape overlaps: {overlaps}")
     print(f"  Keepout/pad hits:   {keepout_hits}")
     print(f"  Out-of-bounds:      {oob_hits}")
+    print(f"  QR via/track hits:  {qr_copper_hits}")
     print(f"  Tether drift hits:  {tether_violations}")
     print(f"  Split pair hits:    {split_pair_violations}")
 
@@ -997,6 +1623,8 @@ def inspect_board_silk(
         failures.append(f"{keepout_hits} keepout hits")
     if oob_hits:
         failures.append(f"{oob_hits} out-of-bounds")
+    if qr_copper_hits:
+        failures.append(f"{qr_copper_hits} QR via/track hits")
     if tether_violations:
         failures.append(f"{tether_violations} tether drift")
     if split_pair_violations:

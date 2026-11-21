@@ -61,20 +61,21 @@ python3 .agents/skills/eurorack-panel/scripts/generate_eurorack_panel.py \
 ```
 
 ### Step 3: Verify with KiCad PCB/Gerber Analyzers & 3D Renders
-1. **Static & Gerber Verification** (using the [`aklofas/kicad-happy`](https://github.com/aklofas/kicad-happy) `kicad` skill analyzers when present):
+1. **Static & Gerber Verification** (using the [`aklofas/kicad-happy`](https://github.com/aklofas/kicad-happy) `kicad` skill analyzers when present; use `.venv/bin/python` with Python `>= 3.10`):
    ```bash
-   python3 .agents/skills/kicad/scripts/analyze_pcb.py BufferedMult_Panel.kicad_pcb --full --output /tmp/panel_pcb.json
-   python3 .agents/skills/kicad/scripts/analyze_gerbers.py production/panel/ --full --output /tmp/panel_gerbers.json
+   .venv/bin/python .agents/skills/kicad/scripts/analyze_pcb.py BufferedMult_Panel.kicad_pcb --full --output /tmp/panel_pcb.json
+   .venv/bin/python .agents/skills/kicad/scripts/analyze_gerbers.py production/panel/ --full --output /tmp/panel_gerbers.json
    ```
-   Confirm `0` DRC errors, `0` unconnected items, `0` Gerber findings, and exact drill counts (`8` jack PTH holes + `2` or `4` M3 NPTH oval slots).
-2. **Visual 3D Raytraced Inspection**:
+   Confirm `0` DRC errors, `0` unconnected items, `0` Gerber errors, and drill counts matching the panel's component manifest (grounded jack/pot/switch PTH cutouts + `2` or `4` M3 NPTH oval mounting slots + any NPTH LED apertures; note that `analyze_gerbers.py` counts NPTH LED holes such as `3.2 mm` under `mounting_holes`, and `analyze_pcb.py` may emit benign `CP-002` `info` notices on copper-shield panels).
+2. **Visual 3D Raytraced Inspection** (always render into workspace-local paths—**never** `/tmp/`, where reading external images can trigger permission timeouts):
    ```bash
+   mkdir -p panel
    /Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli pcb render \
-       --side top --width 800 --height 2400 --output /tmp/panel_front.png BufferedMult_Panel.kicad_pcb
+       --side top --width 800 --height 2400 --output panel/BufferedMult_Panel_front.png BufferedMult_Panel.kicad_pcb
    /Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli pcb render \
-       --side bottom --width 800 --height 2400 --output /tmp/panel_back.png BufferedMult_Panel.kicad_pcb
+       --side bottom --width 800 --height 2400 --output panel/BufferedMult_Panel_back.png BufferedMult_Panel.kicad_pcb
    ```
-   Inspect `/tmp/panel_front.png` and `/tmp/panel_back.png` to confirm silkscreen labels clear all `9.5 mm` M6 nut keepouts (`Dwgs.User` circles) and board edges.
+   Inspect `panel/BufferedMult_Panel_front.png` and `panel/BufferedMult_Panel_back.png` to confirm silkscreen labels clear all `9.5 mm` M6 nut keepouts (`Dwgs.User` circles) and board edges.
 
 ---
 

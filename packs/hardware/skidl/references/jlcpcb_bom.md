@@ -27,7 +27,7 @@ r_t.fields["JLCPCB_Class"] = "Basic"
 # Template copies automatically inherit a copy of `r_t.fields`
 r1, r2 = r_t(2, value="470R", tag="r_out")
 ```
-* **Exception for `dnp` and `exclude_from_bom`**: KiCad's netlist generator (`gen_netlist_comp`) checks `getattr(part, "dnp", False)` and `getattr(part, "exclude_from_bom", False)` as direct attributes on `part` (emitting `(property (name "dnp"))`). Set those directly on the part (`part.dnp = True`), while keeping catalog strings (`LCSC`, `MPN`, etc.) in `part.fields`.
+* **Exception for `dnp`, `exclude_from_bom`, and `exclude_from_pos_files`**: Set all three flags as direct attributes on optional / unpopulated parts such as `TP*` test points (`part.dnp = True`, `part.exclude_from_bom = True`, `part.exclude_from_pos_files = True`), while keeping catalog strings (`LCSC`, `MPN`, etc.) in `part.fields` and documenting their LCSC part number in a separate `DNP / Optional` BOM section. (KiCad's SKiDL netlist generator checks `dnp` and `exclude_from_bom` on `part`, emitting `(property (name "dnp"))`, and PCB layout tools enforce all three on the board.)
 
 ---
 
@@ -36,11 +36,14 @@ r1, r2 = r_t(2, value="470R", tag="r_out")
 Never rely purely on memorized LCSC `C`-numbers—parts frequently go out of stock, become deprecated (`(SMTonly)` with `0` stock, such as `C17407`), or map to a different package than expected (e.g., `C6965` is an SO-8 `TL081CDT`, whereas `C12594` and `C6963` are SOIC-14 `TL074`).
 
 ### Option A: Live Query Helper Script (Recommended for BOM Verification)
-Run [jlcpcb_search.py](../scripts/jlcpcb_search.py) to query JLCPCB's live `selectSmtComponentList/v2` endpoint (with automatic fallback to `jlcsearch.tscircuit.com`):
+Run [jlcpcb_search.py](../scripts/jlcpcb_search.py) to query JLCPCB's live `selectSmtComponentList/v2` endpoint (with automatic fallback to `jlcsearch.tscircuit.com`). Use `--basic`, `-o/--output`, and `--delay` when verifying an entire BOM in a single batch:
 ```bash
-python3 .agents/skills/skidl/scripts/jlcpcb_search.py --in-stock-only "100k 0805" "TL074 SOIC-14" "10uF D6.3xL5.4mm"
+python3 .agents/skills/skidl/scripts/jlcpcb_search.py --in-stock-only --basic --delay 0.3 -o /tmp/bom_search.json "100k 0603" "22pF 0603" "TL074 SOIC-14" "10uF D6.3xL5.4mm"
 ```
 *(Note: Because this script makes HTTPS requests to `jlcpcb.com`, run it outside the sandbox if sandbox network access is disabled.)*
+
+* **Search Query Traps (Use Minimal Tokens)**: Avoid over-constrained multi-word search strings. Queries like `"22pF 50V C0G 0603"`, `"47pF 50V C0G 0603"`, or `"100pF 50V C0G 0603"` can return mis-matched `1 nF` parts (`C18255878`), whereas short queries (`"22pF 0603"`, `"47pF 0603"`, `"100pF 0603"`) reliably find Samsung Basic Class I MLCCs (`C1653`, `C1671`, `C14858`). Similarly, `"3mm LED green"` can return `0` hits while `"3mm LED"` finds standard options (`C85161`). Query with 2–3 minimal tokens and verify dielectric, voltage, and color in the returned `description`.
+* **`"package": "-"` Mechanical & Drill Verification**: THT and specialty mechanical parts (such as `RH-5001` test points / `C5199801`) often report `"package": "-"` in search results, and product titles can embed misleading measurements (e.g., `"2.5mm"` on `RH-5001` is the glass bead OD, whereas the required PCB drill is `Ø 1.0 mm`). Whenever `"package"` is `"-"` or ambiguous, always open the `datasheet` (`dataManualUrl`) PDF to verify PCB drill diameter, body height, and board protrusion before finalizing footprints.
 
 ### Option B: Lightweight `jlcsearch` JSON API
 Query `https://jlcsearch.tscircuit.com` directly:
@@ -61,6 +64,12 @@ JLCPCB categorizes SMT components into three tiers:
 2. **Preferred Extended Parts (`preferredComponentFlag == True`)**: Promotional extended parts with **\$0 feeder loading fee**.
 3. **Extended Parts (`componentLibraryType == "expand"`)**: Incur a **~\$3.00 setup/feeder loading fee per unique part line** per order. Consolidate values/footprints where possible to minimize unique Extended part lines.
 4. **Panel-Mounted / Manual Through-Hole Parts**: Controls that must be aligned physically against a front panel before soldering (such as `WQP-PJ398SM` / Thonkiconn 3.5mm jacks or potentiometers) usually have `0` SMT stock on JLCPCB and should be omitted from the JLCPCB PCBA BOM for manual assembly.
+
+### 3-Bucket Eurorack / Mixed-Assembly BOM Split
+Organize project BOM documentation and SKiDL export filtering into three explicit buckets:
+1. **JLCPCB SMT PCBA** (`jlcpcb_bom.csv`): All SMT components populated by JLCPCB (assign `LCSC`, `MPN`, `JLCPCB_Class`).
+2. **Manual THT / Panel-Mounted**: Jacks, potentiometers, panel LEDs, power headers (`JLCPCB_Class = "Manual THT"`), and THT caps omitted from `jlcpcb_bom.csv` when `include_tht=False`.
+3. **DNP / Optional** (e.g., `TP1`–`TP8` test points): Set **all three** KiCad exclusion flags (`part.dnp = True`, `part.exclude_from_bom = True`, `part.exclude_from_pos_files = True`) so they never leak into PCBA BOMs or CPL files, while recording their recommended LCSC part number (e.g., `RH-5001` / `C5199801`) in a dedicated `DNP / Optional` BOM section.
 
 ### Commonly Used In-Stock Parts Reference
 | Component | Package / KiCad Footprint | Verified LCSC # | MPN | Library Class | Notes / Footprint Sizing |
@@ -93,6 +102,16 @@ Include this helper in your SKiDL script and call it right after `generate_xml()
 ```python
 import builtins
 import csv
+import re
+
+
+def _natural_ref_key(ref: str) -> tuple[tuple[int, int | str], ...]:
+    """Sort designators naturally (e.g., R1, R2, R10 instead of R1, R10, R2)."""
+    return tuple(
+        (0, int(tok)) if tok.isdigit() else (1, tok)
+        for tok in re.split(r"(\d+)", ref.strip())
+        if tok
+    )
 
 
 def generate_jlcpcb_bom(file_="jlcpcb_bom.csv", include_tht=False):
@@ -120,8 +139,9 @@ def generate_jlcpcb_bom(file_="jlcpcb_bom.csv", include_tht=False):
         groups.setdefault(key, []).append(part.ref)
 
     with open(file_, "w", newline="", encoding="utf-8") as csvfile:
-        writer = csv.writer(csvfile)
+        writer = csv.writer(csvfile, lineterminator="\n")
         writer.writerow(["Comment", "Designator", "Footprint", "LCSC Part #"])
         for (comment, footprint, lcsc), refs in groups.items():
-            writer.writerow([comment, ", ".join(refs), footprint, lcsc])
+            sorted_refs = sorted(refs, key=_natural_ref_key)
+            writer.writerow([comment, ", ".join(sorted_refs), footprint, lcsc])
 ```

@@ -7,9 +7,13 @@ Usage:
     python3 .agents/skills/skidl/scripts/jlcpcb_search.py "C149504" "TL074 SOIC-14" "10uF D6.3xL5.4mm"
 """
 
+from __future__ import annotations
+
 import argparse
 import json
+import pathlib
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -66,16 +70,29 @@ def query_jlcpcb(keyword: str, page_size: int = 8) -> list[dict]:
                 "class": jlc_class,
                 "stock": item.get("stockCount") or 0,
                 "unit_price_usd": unit_price,
+                "datasheet": item.get("dataManualUrl") or None,
                 "description": item.get("describe"),
             }
         )
     return results
 
 
+def _parse_extra(raw_extra: object) -> dict:
+    if isinstance(raw_extra, dict):
+        return raw_extra
+    if isinstance(raw_extra, str):
+        try:
+            parsed = json.loads(raw_extra)
+            return parsed if isinstance(parsed, dict) else {}
+        except (json.JSONDecodeError, TypeError):
+            return {}
+    return {}
+
+
 def query_jlcsearch(keyword: str, limit: int = 8) -> list[dict]:
     """Fallback query using jlcsearch.tscircuit.com JSON API."""
     q = urllib.parse.quote(keyword)
-    url = f"https://jlcsearch.tscircuit.com/api/search?q={q}&limit={limit}"
+    url = f"https://jlcsearch.tscircuit.com/api/search?q={q}&limit={limit}&full=true"
     req = urllib.request.Request(
         url,
         headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
@@ -86,16 +103,41 @@ def query_jlcsearch(keyword: str, limit: int = 8) -> list[dict]:
 
     results = []
     for item in items:
+        extra = _parse_extra(item.get("extra"))
         lcsc_num = item.get("lcsc")
+        is_basic = item.get("is_basic")
+        if is_basic is None:
+            is_basic = bool(item.get("basic"))
+        is_preferred = bool(item.get("is_preferred"))
+        if is_basic:
+            jlc_class = "Basic"
+        elif is_preferred:
+            jlc_class = "Preferred Extended"
+        else:
+            jlc_class = "Extended"
+
+        mfg = extra.get("manufacturer")
+        brand = mfg.get("name") if isinstance(mfg, dict) else None
+        ds_block = extra.get("datasheet")
+        datasheet = (
+            (
+                ds_block.get("pdf")
+                if isinstance(ds_block, dict)
+                else (ds_block if isinstance(ds_block, str) else None)
+            )
+            or item.get("datasheet")
+            or None
+        )
         results.append(
             {
                 "lcsc": f"C{lcsc_num}" if lcsc_num else None,
                 "mpn": item.get("mfr"),
-                "brand": None,
-                "package": item.get("package"),
-                "class": "Basic" if item.get("basic") else "Extended",
+                "brand": brand,
+                "package": extra.get("package") or item.get("package"),
+                "class": jlc_class,
                 "stock": item.get("stock") or 0,
                 "unit_price_usd": item.get("price"),
+                "datasheet": datasheet,
                 "description": item.get("description"),
             }
         )
@@ -113,6 +155,24 @@ def main() -> int:
         help="Filter out components with 0 stock",
     )
     parser.add_argument(
+        "--basic",
+        action="store_true",
+        help="Filter out non-Basic parts (keep only Basic library parts)",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        type=pathlib.Path,
+        default=None,
+        help="Write JSON output to file instead of stdout",
+    )
+    parser.add_argument(
+        "--delay",
+        type=float,
+        default=0.0,
+        help="Delay in seconds between consecutive queries (default: 0.0)",
+    )
+    parser.add_argument(
         "--limit",
         type=int,
         default=8,
@@ -120,31 +180,50 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    output = {}
-    for kw in args.keywords:
+    output: dict[str, list[dict]] = {}
+    failed = 0
+    fetch_limit = (
+        max(args.limit, 50) if (args.basic or args.in_stock_only) else args.limit
+    )
+    for idx, kw in enumerate(args.keywords):
+        if idx > 0 and args.delay > 0:
+            time.sleep(args.delay)
         try:
-            items = query_jlcpcb(kw, page_size=args.limit)
+            items = query_jlcpcb(kw, page_size=fetch_limit)
         except (urllib.error.URLError, TimeoutError, KeyError, ValueError) as err:
             print(
                 f"[warn] JLCPCB API failed for '{kw}' ({err}); trying jlcsearch...",
                 file=sys.stderr,
             )
             try:
-                items = query_jlcsearch(kw, limit=args.limit)
+                items = query_jlcsearch(kw, limit=fetch_limit)
             except (urllib.error.URLError, TimeoutError, KeyError, ValueError) as err2:
                 print(
                     f"[error] jlcsearch fallback also failed for '{kw}' ({err2}). "
                     "Ensure network access is enabled (e.g. run outside the sandbox).",
                     file=sys.stderr,
                 )
-                return 1
+                output[kw] = []
+                failed += 1
+                continue
 
         if args.in_stock_only:
             items = [i for i in items if (i.get("stock") or 0) > 0]
-        output[kw] = items
+        if args.basic:
+            items = [i for i in items if i.get("class") == "Basic"]
+        output[kw] = items[: args.limit]
 
-    print(json.dumps(output, indent=2))
-    return 0
+    rendered = json.dumps(output, indent=2)
+    if args.output is not None:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(rendered + "\n", encoding="utf-8")
+        print(
+            f"[info] Wrote search results for {len(args.keywords)} query(s) to {args.output}",
+            file=sys.stderr,
+        )
+    else:
+        print(rendered)
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
