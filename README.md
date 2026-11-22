@@ -74,6 +74,14 @@ An interactive, stateful code-teaching workflow that builds self-contained HTML 
 
 **Intended Usage:** Invoke with `/teach-code` (or ask the agent to teach a programming language, framework, or engineering tool) to establish a `MISSION.md`, curate `RESOURCES.md`, and progressively build interactive lessons backed by verified, runnable code.
 
+### [`vectorcraft-cli`](skills/vectorcraft-cli/SKILL.md)
+
+Automates [VectorCraft](https://github.com/storytold/vectorcraft) from the command line using `vectorcraft-cli` for headless batch execution (`run`), vector/raster/document format conversion (`convert`), document inspection (`info`), engine command discovery (`commands`), confined stdio MCP server sessions (`mcp`), and render/performance benchmarking (`bench`, `perf`).
+
+**Origin:** Authored directly from the [`storytold/vectorcraft`](https://github.com/storytold/vectorcraft) CLI, engine step resolver, and MCP implementation, pairing concise workflow runbooks in [`SKILL.md`](skills/vectorcraft-cli/SKILL.md) with complete CLI flag tables, conflict rules, `$N`/`$last` step-reference syntax, supported formats, performance budgets, and MCP protocol details in [`reference.md`](skills/vectorcraft-cli/references/reference.md).
+
+**Intended Usage:** Activated when running `vectorcraft-cli` headlessly, scripting multi-step vector artwork generation or batch edits, converting between formats (`.vectorcraft`, `.svg`, `.pdf`, `.ai`, `.eps`, `.psd`, `.png`, etc.), inspecting import warnings and document metadata, configuring the `vectorcraft-cli mcp` server with `--automation-read-root`/`--automation-write-root`, or running `bench`/`perf` checks.
+
 ## Skill Packs
 
 Skill packs live under [`packs/`](packs/) so they are excluded from default `npx skills add domesticmouse/skills` installs, while remaining installable as a group via subpath.
