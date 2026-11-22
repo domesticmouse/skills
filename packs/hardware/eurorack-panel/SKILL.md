@@ -4,49 +4,52 @@ description: >-
   Design, inspect, and generate mated 3U Eurorack front panels in KiCad (.kicad_pcb)
   from an existing main circuit PCB. Automatically extracts jack, potentiometer,
   switch, and LED coordinates from the main board, applies footprint-to-bushing
-  mechanical offsets (such as the +6.48mm WQP-PJ398SM Thonkiconn offset), places
-  Doepfer A-100 standard M3 mounting slots, generates silkscreen labels and input
-  callout badges, fills grounded F.Cu/B.Cu copper shield planes via KiCad's
-  pcbnew API, runs DRC checks, and exports fabrication-ready Gerbers, Excellon
-  drills, and 3D renders. Use whenever the user asks to plan, design, align,
-  create, or export a Eurorack front panel or faceplate in KiCad.
+  mechanical offsets (such as the +6.48mm WQP-PJ398SM Thonkiconn offset), detects
+  10-48 sub-miniature (5.2mm) vs 1/4-40 miniature (6.2mm) toggle drills, places
+  Doepfer A-100 standard M3 mounting slots, supports both auto-labeled and blank-front
+  (--blank-front) faceplates with collision-free back-face B.SilkS metadata (module
+  name, version, URL, 5x5mm JLCPCB QR placeholder), exports Markdown/JSON SVG
+  dimension specifications (--spec-md) for downstream SVG-crafting apps (F.SilkS and
+  F.Mask), fills grounded F.Cu/B.Cu copper shield planes, runs DRC checks, and
+  exports fabrication-ready Gerbers, Excellon drills, and 3D renders. Use whenever
+  the user asks to plan, design, align, create, or export a Eurorack front panel,
+  blank faceplate, SVG dimension spec, or KiCad faceplate.
 ---
 
 # Eurorack Front Panel Design & Generation (`eurorack-panel`)
 
-This skill automates the mechanical alignment, KiCad `.kicad_pcb` generation, DRC verification, and Gerber/Drill export of **Doepfer A-100 3U Eurorack Front Panels** mated to a main circuit PCB.
+This skill automates mechanical alignment, KiCad `.kicad_pcb` generation, SVG dimension specification export, DRC verification, and Gerber/Drill packaging for **Doepfer A-100 3U Eurorack Front Panels** mated to a main circuit PCB.
 
 ## 1. Critical Mechanical Alignment Rules
 
-1. **Footprint Origin vs. Bushing/Shaft Center**:
-   - In KiCad, panel-mounted component footprints (jacks, vertical pots, switches, LEDs) rarely place their `(0, 0)` origin at the mechanical shaft/bushing center.
-   - Example: In `Connector_Audio:Jack_3.5mm_QingPu_WQP-PJ398SM_Vertical_CircularHoles` (Thonkiconn), `(0, 0)` is **Pad `S` (Sleeve)**, while the **M6 threaded bushing center** (`fp_circle`) is offset by **`(0.00, +6.48 mm)`** at `rotation = 0°`.
-   - Always locate the shaft/bushing `fp_circle` inside the footprint definition and rotate the offset `(cx, cy)` by the footprint's placement angle before drilling panel cutouts. See [Eurorack Mechanical Specification & KiCad Footprint Offsets](./references/eurorack_mechanical_spec.md) for the complete HP width and component offset tables.
+1. **Footprint Origin vs. Bushing/Shaft Center & Toggle Drills**:
+   - In KiCad, panel-mounted component footprints (jacks, vertical pots, switches, LEDs) rarely place `(0, 0)` at the mechanical shaft/bushing center (e.g., Thonkiconn `WQP-PJ398SM` offsets `(0.00, +6.48 mm)` from Pad `S`).
+   - Always locate the shaft/bushing `fp_circle` inside the footprint definition and rotate `(cx, cy)` by the placement angle before drilling cutouts.
+   - Distinguish **`10-48` sub-miniature toggles** (e.g. Dailywell `2MS1` / Tayda `A-6087` -> **`5.2 mm`** drill, `7.2 mm` back GND pad) from **`1/4-40` miniature toggles** (`6.2 mm` drill), and override individual holes with `--drill REF=MM` if hardware varies. See [Eurorack Mechanical Specification & KiCad Footprint Offsets](./references/eurorack_mechanical_spec.md) for complete tables.
 2. **Vertical Centering & Rail Lip Clearance**:
-   - Standard 3U panel height is **`128.5 mm`**.
-   - Centering a `108.0 mm` main PCB vertically behind a `128.5 mm` panel leaves **`10.25 mm`** of clearance at both the top and bottom edges, clearing standard `~7.5 mm` Eurorack rail lips and M3 mounting hardware.
+   - Standard 3U panel height is **`128.5 mm`**. Centering a `108.0 mm` main PCB leaves **`10.25 mm`** top/bottom clearance behind standard `~7.5 mm` Eurorack rail lips and M3 mounting slots.
    - Keep the panel in the **same global KiCad coordinate system** as the main PCB while setting `(grid_origin X0 Y0)` and `(aux_axis_origin X0 Y0)` to the panel's top-left corner so every hole shares identical global `(X, Y)` coordinates with the main PCB's bushing centers.
-3. **Grounded Shield Planes & Smooth Front Solder Mask**:
-   - Use plated through-holes (`thru_hole circle`, `6.2 mm` drill, `8.6 mm` pad) with `(layers "*.Cu" "B.Mask")` on jack cutouts:
-     - **Front (`F.Cu` / `F.Mask`)**: Solid zone connection (`(connect_pads yes)`) tented under solder mask for a smooth, blemish-free exterior finish with zero thermal-spoke shadows or exposed copper rings around the `9.5 mm` M6 nuts.
-     - **Back (`B.Cu` / `B.Mask`)**: Exposed `8.6 mm` gold/HASL grounding ring so tightening the jack nuts or resting the jack bushing shoulders automatically bonds both `F.Cu` and `B.Cu` shield planes to chassis `GND`.
-   - Place a **`5 mm × 5 mm` solid filled square** on `B.SilkS` for replacement with the JLCPCB QR code during ordering.
+3. **Grounded Shield Planes, Smooth Front Mask & Collision-Free Back Silkscreen**:
+   - Use plated through-holes with `(layers "*.Cu" "B.Mask")` on jack, pot, and switch cutouts so `F.Mask` tents `F.Cu` cleanly on the front while `B.Mask` exposes an annular grounding ring on the rear for chassis `GND` bonding.
+   - On `B.SilkS`, the generator automatically places mirrored (`(justify mirror)`), non-overlapping **module name + version/HP**, optional **GitHub/project URL**, and a **`5.0 × 5.0 mm` solid filled JLCPCB QR placeholder** clear of all `B.Mask` pads, M3 slots, and panel edges.
 
 ---
 
 ## 2. Automated Panel Workflow
 
-### Step 1: Inspect Main PCB Coordinates & Bushing Offsets
-Run [generate_eurorack_panel.py](./scripts/generate_eurorack_panel.py) with `--inspect` to parse the main `.kicad_pcb` file, auto-detect its `Edge.Cuts` outline (`gr_rect` or `gr_line`) and HP width, extract panel-mounted components (3.5mm jacks, vertical potentiometers, toggle switches, and 3mm/5mm THT LEDs), and print the exact footprint-origin, global-bushing, panel-local `(X, Y)` coordinates, and derived front-panel `Label` (automatically stripped from each footprint's `"Silkscreen"` property or falling back to `Value`):
+### Step 1: Inspect Coordinates & Optionally Export SVG Dimension Spec
+Run [generate_eurorack_panel.py](./scripts/generate_eurorack_panel.py) with `--inspect` to parse the main `.kicad_pcb`, auto-detect its `Edge.Cuts` outline and HP width, extract panel-mounted controls, and print the coordinate/drill table. Add `--spec-md` (plus `--url`, `--version`, `--blank-front`, `--drill`) to emit a complete **Markdown + embedded JSON SVG dimension spec** without generating a `.kicad_pcb` yet:
 
 ```bash
 python3 .agents/skills/eurorack-panel/scripts/generate_eurorack_panel.py \
-    --main-pcb BufferedMult.kicad_pcb \
-    --inspect
+    --main-pcb envelope_follower.kicad_pcb \
+    --inspect \
+    --url "github.com/domesticmouse/EnvelopeFollowerWithSkewLimiter" \
+    --spec-md panel_svg_spec.md
 ```
 
-### Step 2: Generate the Panel `.kicad_pcb`, Run DRC, and Export Gerbers
-Generate the standalone front panel board, automatically refill `F.Cu` and `B.Cu` `GND` copper zones via KiCad's bundled `pcbnew.ZONE_FILLER`, run `kicad-cli pcb drc`, and package Gerbers + Excellon drills (run outside the sandbox with `BypassSandbox: true` on macOS if sandbox access to `/Applications/KiCad/KiCad.app` is restricted). Use `-l` / `--label REF=TEXT` (repeatable) to override individual component silkscreen labels, and `--cascade-arrow` / `--no-cascade-arrow` to control the normalled cascade arrow between row groups:
+### Step 2A: Generate a Standard Auto-Labeled Front Panel
+Generate the standalone front panel board with auto-derived `F.SilkS` labels/badges, refill `F.Cu`/`B.Cu` `GND` zones via `pcbnew.ZONE_FILLER`, run `kicad-cli pcb drc`, and package Gerbers + Excellon drills (run outside the sandbox with `BypassSandbox: true` on macOS if sandbox access to `/Applications/KiCad/KiCad.app` is restricted):
 
 ```bash
 python3 .agents/skills/eurorack-panel/scripts/generate_eurorack_panel.py \
@@ -59,6 +62,25 @@ python3 .agents/skills/eurorack-panel/scripts/generate_eurorack_panel.py \
     --zip production/BufferedMult_Panel.zip \
     --drc
 ```
+
+### Step 2B: Generate a Blank-Front Faceplate & Export SVG Spec
+Pass `--blank-front` to emit **zero `F.SilkS` graphics** on the front while placing mirrored module name, `--version` (defaults to `title_block.rev`), `--url`, and the `5 × 5 mm` JLCPCB QR square on `B.SilkS`. Pass `--spec-md` to produce the Markdown + JSON spec for a downstream SVG-crafting skill/app:
+
+```bash
+python3 .agents/skills/eurorack-panel/scripts/generate_eurorack_panel.py \
+    --main-pcb envelope_follower.kicad_pcb \
+    --output envelope_follower_panel.kicad_pcb \
+    --blank-front \
+    --title "ENVELOPE FOLLOWER + SKEW LIMITER" \
+    --version "Rev 1.0" \
+    --url "github.com/domesticmouse/EnvelopeFollowerWithSkewLimiter" \
+    --spec-md panel_svg_spec.md \
+    --drc
+```
+
+To apply custom artwork generated from `panel_svg_spec.md` onto the blank front face:
+1. Pass `panel_svg_spec.md` to your SVG-crafting skill/app to produce aligned **1:1 mm** Plain SVGs (text/strokes converted to paths) for `F.SilkS` and `F.Mask` with a `(0, 0)` → `(panel_w, 128.50)` registration frame.
+2. In KiCad PCB Editor, open the generated `*_panel.kicad_pcb`, run **File → Import → Graphics...** at Scale `1.0` onto `F.SilkS` and `F.Mask`, anchor at the panel origin, **Ungroup** and delete the temporary registration frame, press **`B`** to refill zones, and re-run `kicad-cli pcb drc`. See Section 3 of [Eurorack Mechanical Specification & KiCad Footprint Offsets](./references/eurorack_mechanical_spec.md) for copper pullback and clearance rules.
 
 ### Step 3: Verify with KiCad PCB/Gerber Analyzers & 3D Renders
 1. **Static & Gerber Verification** (using the [`aklofas/kicad-happy`](https://github.com/aklofas/kicad-happy) `kicad` skill analyzers when present; use `.venv/bin/python` with Python `>= 3.10`):
