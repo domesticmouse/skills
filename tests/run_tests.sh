@@ -9,6 +9,7 @@ KICAD_PYTHON="/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework
 echo "==> Running ruff (py39 target on KiCad-bootstrapped scripts)"
 ruff check --target-version py39 \
   packs/hardware/eurorack-panel/scripts/import_panel_svgs.py \
+  packs/hardware/extract-pdf-schematic/scripts/extract_schematic.py \
   packs/hardware/kicad-pcbnew-layout/scripts/pcbnew_layout_template.py \
   packs/hardware/kicad-silkscreen-markup/scripts/silk_annotator.py \
   packs/hardware/kicad-silkscreen-markup/scripts/silk_layout.py
@@ -16,12 +17,14 @@ ruff check --target-version py39 \
 echo "==> Running ruff check & format --check on hardware scripts and tests"
 ruff check \
   packs/hardware/eurorack-panel/scripts \
+  packs/hardware/extract-pdf-schematic/scripts \
   packs/hardware/kicad-pcbnew-layout/scripts \
   packs/hardware/kicad-silkscreen-markup/scripts \
   tests
 ruff format --check \
   packs/hardware/eurorack-panel/scripts/audit_panel_svgs.py \
   packs/hardware/eurorack-panel/scripts/import_panel_svgs.py \
+  packs/hardware/extract-pdf-schematic/scripts/extract_schematic.py \
   packs/hardware/kicad-pcbnew-layout/scripts/pcbnew_layout_template.py \
   packs/hardware/kicad-silkscreen-markup/scripts/render_silk_preview.py \
   packs/hardware/kicad-silkscreen-markup/scripts/silk_annotator.py \
