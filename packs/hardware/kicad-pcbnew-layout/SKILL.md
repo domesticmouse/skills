@@ -26,7 +26,7 @@ Use this workflow when turning a KiCad `.net` netlist into a fully placed, route
    - Write a minimal KiCad PCB shell and open it with `pcbnew.LoadBoard()` instead of calling `fp.Flip()` directly on an uninitialized `pcbnew.BOARD()`.
    - `board.Add(fp)` **before** calling `fp.Flip(pos, False)` or setting rotation (`Flip` must precede `SetOrientationDegrees`).
    - Do **not** overwrite loaded footprints with `fp.SetFPID(pcbnew.LIB_ID(lib, fp_name))` when running in headless/sandboxed environments where global `fp-lib-table` cannot be opened, or `kicad-cli pcb drc` will emit `lib_footprint_issues` warnings for every footprint.
-   - Mark optional / unpopulated parts (e.g., `TP1`–`TP8`, `dnp=True`, or by passing `dnp_prefixes=("TP",)` to `parse_netlist()`) and optical fiducials (`FID*`, via `populate_footprints()` / `add_fiducials()`) with **all three** flags: `fp.SetDNP(True)`, `fp.SetExcludedFromBOM(True)`, and `fp.SetExcludedFromPosFiles(True)` so neither `TP*` nor `FID*` leak into JLCPCB CPL exports (`--smd-only --exclude-dnp`).
+   - Mark optional / unpopulated parts (e.g., `TP1`–`TP8`, `dnp=True`, or by passing `dnp_prefixes=("TP",)` to `parse_netlist()`) and optical fiducials (`FID*`, via `populate_footprints()` / `add_fiducials()`, which also sets `fp.SetBoardOnly(True)`) with **all three** flags: `fp.SetDNP(True)`, `fp.SetExcludedFromBOM(True)`, and `fp.SetExcludedFromPosFiles(True)` so neither `TP*` nor `FID*` leak into JLCPCB CPL exports (`--smd-only --exclude-dnp`).
 
 4. **Plan Eurorack / 2-layer sandwich placement**:
    Place panel-mounted controls on `F.Cu` aligned to panel bushing coordinates (applying footprint-origin-to-bushing mechanical offsets), and place headers, test points, and SMDs on `B.Cu`. Leave `>= 1.5–2.0 mm` silkscreen label corridors between SMD passive rows and adjacent IC/THT keepouts so local labels stay within `3.5 mm` tether bounds. See [routing_and_dfm_patterns.md](./references/routing_and_dfm_patterns.md).
@@ -40,7 +40,7 @@ Use this workflow when turning a KiCad `.net` netlist into a fully placed, route
    - Call `board.BuildConnectivity()` **both before and after** `pcbnew.ZONE_FILLER(board).Fill(board.Zones())` with `ISLAND_REMOVAL_MODE_ALWAYS`.
 
 6. **Apply silkscreen & fab notes**:
-   Pair layout generation with the [`kicad-silkscreen-markup`](../kicad-silkscreen-markup/SKILL.md) workflow using density-adaptive labeling (concise value-only tokens for `R*`/`C*` passives on dense sides, `<REF> + <VAL>` for active, polarized, and interface parts), polarity markings, QR placeholders, and `B.Fab` notes with strict local tethering (never use board-wide fallback scans).
+   Pair layout generation with the [`kicad-silkscreen-markup`](../kicad-silkscreen-markup/SKILL.md) workflow using density-adaptive labeling (concise value-only tokens for `R*`/`C*` passives on dense sides, `<REF> + <VAL>` for active, polarized, and interface parts), polarity markings, QR placeholders, and `B.Fab` notes with strict local tethering (never use board-wide fallback scans). For fine-tuning individual labels without regenerating copper, use `silk_layout.py` and `render_silk_preview.py`.
 
 ## Mandatory Verification Sequence
 

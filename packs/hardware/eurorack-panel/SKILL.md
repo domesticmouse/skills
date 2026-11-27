@@ -10,10 +10,11 @@ description: >-
   (--blank-front) faceplates with collision-free back-face B.SilkS metadata (module
   name, version, URL, 5x5mm JLCPCB QR placeholder), exports Markdown/JSON SVG
   dimension specifications (--spec-md) for downstream SVG-crafting apps (F.SilkS and
-  F.Mask), fills grounded F.Cu/B.Cu copper shield planes, runs DRC checks, and
-  exports fabrication-ready Gerbers, Excellon drills, and 3D renders. Use whenever
-  the user asks to plan, design, align, create, or export a Eurorack front panel,
-  blank faceplate, SVG dimension spec, or KiCad faceplate.
+  F.Mask), normalizes and audits panel SVGs for 40 px/mm clearance, imports F.SilkS/F.Mask
+  SVGs headlessly into KiCad, fills grounded F.Cu/B.Cu copper shield planes, runs DRC
+  checks, and exports fabrication-ready Gerbers, Excellon drills, and 3D renders. Use
+  whenever the user asks to plan, design, align, create, import artwork for, or export a
+  Eurorack front panel, blank faceplate, SVG dimension spec, or KiCad faceplate.
 ---
 
 # Eurorack Front Panel Design & Generation (`eurorack-panel`)
@@ -79,8 +80,25 @@ python3 .agents/skills/eurorack-panel/scripts/generate_eurorack_panel.py \
 ```
 
 To apply custom artwork generated from `panel_svg_spec.md` onto the blank front face:
-1. Pass `panel_svg_spec.md` to your SVG-crafting skill/app to produce aligned **1:1 mm** Plain SVGs (text/strokes converted to paths) for `F.SilkS` and `F.Mask` with a `(0, 0)` → `(panel_w, 128.50)` registration frame.
-2. In KiCad PCB Editor, open the generated `*_panel.kicad_pcb`, run **File → Import → Graphics...** at Scale `1.0` onto `F.SilkS` and `F.Mask`, anchor at the panel origin, **Ungroup** and delete the temporary registration frame, press **`B`** to refill zones, and re-run `kicad-cli pcb drc`. See Section 3 of [Eurorack Mechanical Specification & KiCad Footprint Offsets](./references/eurorack_mechanical_spec.md) for copper pullback and clearance rules.
+1. Pass `panel_svg_spec.md` to your SVG-crafting skill/app (e.g., `vectorcraft-cli`) to produce aligned **1:1 mm** Plain SVGs (text/strokes converted to filled paths) for `F.SilkS` and `F.Mask` with a `(0, 0)` → `(panel_w, 128.50)` registration frame.
+2. **Normalize & Audit Clearances** (optional when normalizing `pt`-unit SVGs or running `40 px/mm` morphological keepout checks against `panel_svg_spec.md` using [audit_panel_svgs.py](./scripts/audit_panel_svgs.py); audit PNGs must be rendered at exact `round(panel_w * 40) × round(128.5 * 40)` px with `registration_frame` excluded, using either RGBA transparency or auto-detected light-on-dark/dark-on-light polarity—pass `--polarity`, `--skip-pot-nut-keepout`, or `--allow-empty` if needed):
+   ```bash
+   .venv/bin/python .agents/skills/eurorack-panel/scripts/audit_panel_svgs.py \
+       --spec-md panel_svg_spec.md \
+       --normalize-silks panel_art/front_silkscreen.raw.svg panel_art/front_silkscreen.svg \
+       --normalize-mask panel_art/front_soldermask.raw.svg panel_art/front_soldermask.svg \
+       --audit-silks-png panel_art/_audit_silks.png \
+       --audit-mask-png panel_art/_audit_mask.png
+   ```
+3. **Import SVGs Headlessly into KiCad** via [import_panel_svgs.py](./scripts/import_panel_svgs.py) (derives `AuxOrigin` dynamically, preserves compound knockout islands via `BooleanXor`/`Fracture`, strips `id="registration_frame"`, preserves `B.SilkS`, optionally injects Matte Black + ENIG stackup, and refills `GND` zones):
+   ```bash
+   python3 .agents/skills/eurorack-panel/scripts/import_panel_svgs.py \
+       --pcb envelope_follower_panel.kicad_pcb \
+       --silks-svg panel_art/front_silkscreen.svg \
+       --mask-svg panel_art/front_soldermask.svg
+   kicad-cli pcb drc --severity-all --refill-zones --format json --output /tmp/panel_drc.json envelope_follower_panel.kicad_pcb
+   ```
+   *(GUI fallback: open `*_panel.kicad_pcb` in KiCad PCB Editor, run **File → Import → Graphics...** at Scale `1.0` onto `F.SilkS` and `F.Mask`, anchor at the panel origin, **Ungroup** and delete the temporary registration frame, press **`B`** to refill zones, and re-run `kicad-cli pcb drc`.)* See Section 3 of [Eurorack Mechanical Specification & KiCad Footprint Offsets](./references/eurorack_mechanical_spec.md) for copper pullback and JLCPCB Matte Black + ENIG ordering rules.
 
 ### Step 3: Verify with KiCad PCB/Gerber Analyzers & 3D Renders
 1. **Static & Gerber Verification** (optional, using the [`aklofas/kicad-happy`](https://github.com/aklofas/kicad-happy) `kicad` skill analyzers when installed; use `.venv/bin/python` with Python `>= 3.10`):
@@ -92,7 +110,7 @@ To apply custom artwork generated from `panel_svg_spec.md` onto the blank front 
      .venv/bin/python .agents/skills/kicad/scripts/analyze_gerbers.py production/panel/ --full --output /tmp/panel_gerbers.json
    fi
    ```
-   Confirm `0` DRC errors, `0` unconnected items, `0` Gerber errors, and drill counts matching the panel's component manifest (grounded jack/pot/switch PTH cutouts + `2` or `4` M3 NPTH oval mounting slots + any NPTH LED apertures; note that `analyze_gerbers.py` counts NPTH LED holes such as `3.2 mm` under `mounting_holes`, and `analyze_pcb.py` may emit benign `CP-002` `info` notices on copper-shield panels).
+   Confirm `0` DRC errors, `0` unconnected items, `0` non-library warnings (`lib_footprint_issues` warnings are expected for the embedded `Eurorack_Panel` cutout footprints), `0` Gerber errors, and drill counts matching the panel's component manifest (grounded jack/pot/switch PTH cutouts + `2` or `4` M3 NPTH oval mounting slots + any NPTH LED apertures; note that `analyze_gerbers.py` counts NPTH LED holes such as `3.2 mm` under `mounting_holes`, and `analyze_pcb.py` may emit benign `CP-002` `info` notices on copper-shield panels).
 2. **Visual 3D Raytraced Inspection** (always render into workspace-local paths—**never** `/tmp/`, where reading external images can trigger permission timeouts):
    ```bash
    mkdir -p panel
@@ -107,7 +125,7 @@ To apply custom artwork generated from `panel_svg_spec.md` onto the blank front 
 
 ## 3. Code Quality & Linting (`ruff`)
 
-* **Mandatory Lint & Format Step**: Whenever you create or modify Python scripts for panel generation or PCB inspection (such as [generate_eurorack_panel.py](./scripts/generate_eurorack_panel.py) or any project Python files), **always** run `ruff` lint and format over the modified Python files before finishing:
+* **Mandatory Lint & Format Step**: Whenever you create or modify Python scripts for panel generation, SVG normalization/auditing, or SVG import (such as [generate_eurorack_panel.py](./scripts/generate_eurorack_panel.py), [audit_panel_svgs.py](./scripts/audit_panel_svgs.py), [import_panel_svgs.py](./scripts/import_panel_svgs.py), or any project Python files), **always** run `ruff` lint and format over the modified Python files before finishing:
   ```bash
   ruff check --fix .agents/skills/eurorack-panel/scripts/generate_eurorack_panel.py
   ruff format .agents/skills/eurorack-panel/scripts/generate_eurorack_panel.py

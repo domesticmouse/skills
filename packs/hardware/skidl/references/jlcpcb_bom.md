@@ -145,3 +145,13 @@ def generate_jlcpcb_bom(file_="jlcpcb_bom.csv", include_tht=False):
             sorted_refs = sorted(refs, key=_natural_ref_key)
             writer.writerow([comment, ", ".join(sorted_refs), footprint, lcsc])
 ```
+
+---
+
+## 5. Interactive Hand-Assembly BOM for Hybrid PCBA + THT Builds
+
+For mixed-assembly boards where JLCPCB populates SMD parts and builders hand-solder `Manual THT` controls/headers, generate an interactive placement map with KiCad's **InteractiveHtmlBom** plugin filtered strictly to hand-soldered parts:
+
+- **Extra fields:** `Value`, `Footprint`, `MPN`, `Manufacturer`
+- **Board variant field:** `JLCPCB_Class`
+- **Variants whitelist:** `Manual THT` only (excludes `Basic`, `Extended`, `DNP THT`, and fiducials)

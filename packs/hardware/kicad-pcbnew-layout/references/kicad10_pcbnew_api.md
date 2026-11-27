@@ -31,7 +31,9 @@ Footprint libraries on macOS live at:
 FP_DIR = pathlib.Path("/Applications/KiCad/KiCad.app/Contents/SharedSupport/footprints")
 ```
 
-Load any footprint with `pcbnew.FootprintLoad(str(FP_DIR / f"{lib}.pretty"), fp_name)`.
+Load any footprint with `pcbnew.FootprintLoad(str(FP_DIR / f"{lib}.pretty"), fp_name)` (or `load_footprint(lib, fp_name, custom_fp_dirs=[ROOT / "footprints"])` to prefer project-local custom footprints before stock libraries).
+
+In `create_base_board()`, setting `ds.SetGridOrigin(...)` and `ds.SetAuxOrigin(...)` to the board's top-left `(x0, y0)` aligns KiCad's GUI rulers and `silk_layout.json` coordinates to board-local `(0, 0)`. When a `.kicad_sch` accompanies the board, pass `sch_uuids=parse_schematic_unit1_uuids(sch_path)` to `populate_footprints()` so `fp.SetPath()` matches unit-1 schematic UUIDs for clean schematic-to-PCB parity.
 
 ### Python `3.9` Runtime Compatibility
 
@@ -74,6 +76,7 @@ else:
 | `pad.GetLocalSolderMaskMargin()` -> `int` | Returns `None` when inheriting board defaults; call `pad.GetSolderMaskExpansion(pcbnew.B_Mask)` / `F_Mask` (layer required) or fall back to `ds.m_SolderMaskExpansion` |
 | `item.GetLayerName() == "B.SilkS"` | `GetLayerName()` returns canonical `"B.Silkscreen"` / `"F.Silkscreen"`; compare numeric layer IDs (`item.GetLayer() in (pcbnew.F_SilkS, pcbnew.B_SilkS)`) |
 | `via.GetWidth()` | Pass a copper layer argument (`via.GetWidth(pcbnew.B_Cu)`) to avoid KiCad's wx assert warning |
+| `board.Remove(item)` / `fp.Remove(item)` | Use `board.Delete(item)` / `fp.Delete(item)` when deleting drawings, texts, or shapes in place to avoid dangling SWIG ownership |
 
 ## 4. `lib_footprint_issues` in Sandbox / Headless DRC
 
@@ -81,8 +84,9 @@ If you call `fp.SetFPID(pcbnew.LIB_ID(lib, fp_name))`, `kicad-cli pcb drc` looks
 
 ## 5. DNP Flags, Zone Fills, and Connectivity
 
-- Mark unpopulated components (`TP*`, optional test headers) and optical fiducials (`FID*`) using **all three** flags so neither `TP*` nor `FID*` leak into `kicad-cli pcb export pos --smd-only --exclude-dnp`:
+- Mark unpopulated components (`TP*`, optional test headers) and optical fiducials (`FID*`) using **all three** flags (plus `fp.SetBoardOnly(True)` on board-only fiducials for schematic-parity DRC) so neither `TP*` nor `FID*` leak into `kicad-cli pcb export pos --smd-only --exclude-dnp`:
   ```python
+  fp.SetBoardOnly(True)  # on board-only fiducials
   fp.SetDNP(True)
   fp.SetExcludedFromBOM(True)
   fp.SetExcludedFromPosFiles(True)

@@ -10,6 +10,7 @@ import os
 import pathlib
 import sys
 import tempfile
+from collections.abc import Sequence
 
 KICAD_PYTHON = pathlib.Path(
     "/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3"
@@ -198,6 +199,44 @@ def parse_netlist(
     return components, nets
 
 
+def parse_schematic_unit1_uuids(sch_path: pathlib.Path) -> dict[str, str]:
+    """Extract unit-1 symbol UUIDs from a flat single-sheet schematic.
+
+    Note: Hierarchical multi-sheet schematics store per-instance refs and paths
+    under `(instances ...)`, which is outside the scope of this flat helper.
+    """
+    tree = parse_sexpr(sch_path.read_text(encoding="utf-8"))
+    uuids: dict[str, str] = {}
+    for sym in _find_children(tree, "symbol"):
+        ref = None
+        for prop in _find_children(sym, "property"):
+            if len(prop) >= 3 and prop[1] == "Reference":
+                ref = prop[2]
+                break
+        unit_n = _find_child(sym, "unit")
+        uuid_n = _find_child(sym, "uuid")
+        if ref and not ref.startswith("#") and unit_n and uuid_n and unit_n[1] == "1":
+            uuids[ref] = uuid_n[1]
+    return uuids
+
+
+def load_footprint(
+    lib: str,
+    fp_name: str,
+    *,
+    custom_fp_dirs: Sequence[pathlib.Path | str] = (),
+    fp_dir: pathlib.Path = FP_DIR,
+) -> pcbnew.FOOTPRINT:
+    """Load a footprint from custom project libraries first, falling back to stock libs."""
+    for base_dir in (*custom_fp_dirs, fp_dir):
+        lib_path = pathlib.Path(base_dir) / f"{lib}.pretty"
+        if lib_path.exists():
+            fp = pcbnew.FootprintLoad(str(lib_path), fp_name)
+            if fp is not None:
+                return fp
+    raise RuntimeError(f"Failed to load footprint {lib}:{fp_name}")
+
+
 def create_base_board(
     out_path: pathlib.Path,
     x0: float,
@@ -214,6 +253,7 @@ def create_base_board(
     via_diam: float = 0.60,
     via_drill: float = 0.30,
     edge_clearance: float = 0.40,
+    set_board_origin: bool = True,
 ) -> pcbnew.BOARD:
     """Create a fresh KiCad 10 PCB via LoadBoard() shell with rectangular Edge.Cuts outline."""
     minimal_pcb = """(kicad_pcb
@@ -276,8 +316,13 @@ def create_base_board(
         tb.SetCompany(company)
 
     ds = board.GetDesignSettings()
-    ds.SetGridOrigin(pcbnew.VECTOR2I(0, 0))
-    ds.SetAuxOrigin(pcbnew.VECTOR2I(0, 0))
+    origin = (
+        pcbnew.VECTOR2I(pcbnew.FromMM(x0), pcbnew.FromMM(y0))
+        if set_board_origin
+        else pcbnew.VECTOR2I(0, 0)
+    )
+    ds.SetGridOrigin(origin)
+    ds.SetAuxOrigin(origin)
     ds.SetTrackWidthIndex(0)
     ds.m_TrackMinWidth = pcbnew.FromMM(0.127)
     ds.m_ViasMinSize = pcbnew.FromMM(0.45)
@@ -318,6 +363,9 @@ def populate_footprints(
     components: dict[str, dict],
     placements: dict[str, tuple[float, float, float, bool]],
     fp_dir: pathlib.Path = FP_DIR,
+    *,
+    custom_fp_dirs: Sequence[pathlib.Path] = (),
+    sch_uuids: dict[str, str] | None = None,
 ) -> dict[str, pcbnew.FOOTPRINT]:
     """Load, add, position, flip (for B.Cu), orient, and configure fields on all footprints."""
     if set(placements) != set(components):
@@ -330,12 +378,7 @@ def populate_footprints(
     for ref, (x, y, rot, is_back) in placements.items():
         comp = components[ref]
         lib, fp_name = comp["footprint"].split(":", 1)
-        lib_path = str(fp_dir / f"{lib}.pretty")
-        fp = pcbnew.FootprintLoad(lib_path, fp_name)
-        if fp is None:
-            raise RuntimeError(
-                f"Failed to load footprint {comp['footprint']} from {lib_path}"
-            )
+        fp = load_footprint(lib, fp_name, custom_fp_dirs=custom_fp_dirs, fp_dir=fp_dir)
         board.Add(fp)
 
         fp.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(x), pcbnew.FromMM(y)))
@@ -344,7 +387,8 @@ def populate_footprints(
         fp.SetOrientationDegrees(rot)
         fp.SetReference(ref)
         fp.SetValue(comp["value"])
-        fp.SetPath(pcbnew.KIID_PATH(f"/{comp['tstamp']}"))
+        inst_uuid = sch_uuids.get(ref, comp["tstamp"]) if sch_uuids else comp["tstamp"]
+        fp.SetPath(pcbnew.KIID_PATH(f"/{inst_uuid}"))
 
         for k, v in comp["fields"].items():
             if k.lower() not in ("dnp", "exclude_from_bom", "exclude_from_pos_files"):
@@ -400,6 +444,8 @@ def add_fiducials(
         fp.SetOrientationDegrees(0.0)
         fp.SetReference(ref)
         fp.SetValue("Fiducial")
+        if hasattr(fp, "SetBoardOnly"):
+            fp.SetBoardOnly(True)
         fp.SetDNP(True)
         fp.SetExcludedFromBOM(True)
         fp.SetExcludedFromPosFiles(True)

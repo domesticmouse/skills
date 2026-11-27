@@ -421,15 +421,16 @@ def add_silk_dot(
     cy: float,
     radius: float = 0.25,
     width: float = 0.15,
+    filled: bool = True,
 ) -> None:
-    """Draw a filled circular silkscreen dot (e.g. Pin-1 marker)."""
+    """Draw a circular silkscreen dot or ring (e.g. Pin-1 marker)."""
     shp = pcbnew.PCB_SHAPE(board)
     shp.SetShape(pcbnew.SHAPE_T_CIRCLE)
     shp.SetLayer(layer_id)
     shp.SetCenter(pcbnew.VECTOR2I(pcbnew.FromMM(cx), pcbnew.FromMM(cy)))
     shp.SetEnd(pcbnew.VECTOR2I(pcbnew.FromMM(cx + radius), pcbnew.FromMM(cy)))
     shp.SetWidth(pcbnew.FromMM(width))
-    shp.SetFilled(True)
+    shp.SetFilled(filled)
     board.Add(shp)
 
 

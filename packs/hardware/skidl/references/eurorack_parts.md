@@ -53,3 +53,23 @@ gnd.drive = POWER
 
 * Because `Conn_02x05_Odd_Even` pins are all `PASSIVE`, KiCad 10 Eeschema ERC flags `[power_pin_not_driven]` on `TL072`/`TL074` `V+`/`V-` pins unless `Part("power", "PWR_FLAG")` is attached to `+12V`, `-12V`, and `GND` **after** `generate_netlist()` (see [kicad10_schematics.md](./kicad10_schematics.md)).
 * For `AudioJack2_SwitchT`, verify the physical `WQP-PJ398SM` Thonkiconn footprint pad numbering (`S`, `T`, `TN`) matches the symbol pins (`S`, `T`, `TN`).
+* Register project-local custom `.pretty` footprint directories alongside stock KiCad libraries via:
+  ```python
+  import pathlib
+  from skidl import KICAD, footprint_search_paths
+
+  footprint_search_paths[KICAD].append(str(pathlib.Path(__file__).resolve().parent / "footprints"))
+  ```
+
+---
+
+## 4. Additional Verified Eurorack & JLCPCB Parts
+
+| Component | KiCad Footprint | Verified LCSC / Notes |
+| :--- | :--- | :--- |
+| **Alpha 9mm Vertical Pot** | `Potentiometer_THT:Potentiometer_Alpha_RD901F-40-00D_Single_Vertical` | Shaft center is `(+7.50, +2.50)` at `rot=0°` (check `F.Fab` circle) |
+| **DNP Test Point (`RH-5001`)** | `TestPoint:TestPoint_Keystone_5000-5004_Miniature` | LCSC `C5199801` (`Ø 1.0 mm` drill; mark `part.dnp = True`, `exclude_from_bom = True`, `exclude_from_pos_files = True`) |
+| **WIMA Box Film Capacitor** | `Capacitor_THT:C_Rect_L7.2mm_W4.5mm_P5.00mm_FKS2_FKP2_MKS2_MKP2` | Use `W7.2mm` variant for larger `2.2uF` box film parts |
+| **TL074H Quad Op-Amp** | `Package_SO:SOIC-14_3.9x8.7mm_P1.27mm` | LCSC `C2878713` (`TL074HIDR`, Extended) |
+| **Dual Schottky (`BAT54S`)** | `Package_TO_SOT_SMD:SOT-23` | Extended; verify Pin `1`=Anode, `2`=Cathode, `3`=Common vs. `Device:D_Schottky_x2_Serial_AKC` |
+| **Schottky Diode (`B5819W`)** | `Diode_SMD:D_SOD-123` | LCSC `C8598` (Basic; `K` = Pin `1`, `A` = Pin `2`) |

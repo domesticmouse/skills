@@ -3,12 +3,15 @@ name: kicad-silkscreen-markup
 description: >-
   Apply collision-free Reference and Value/Function silkscreen labels (with
   density-adaptive value-only labeling for passive R*/C* parts on crowded
-  boards), SMD .Fab body keepouts, dual-sided THT/test-point labels, component
-  polarity indicators, 5x5 mm JLCPCB QR code placeholders, and complete B.Fab
-  fabrication notes to a KiCad 10 .kicad_pcb. Use when annotating a generated
-  or existing KiCad PCB for JLCPCB assembly review, fixing silk_overlap or
-  silk_over_copper DRC violations, or detecting tether-drift and collision
-  failures via silk_annotator.py --inspect.
+  boards), SMD/THT .Fab body keepouts, dual-sided THT/test-point labels,
+  component polarity indicators, 5x5 mm JLCPCB QR code placeholders, complete
+  B.Fab fabrication notes, iterative silk_layout.json round-trip editing and
+  KiCad GUI sync (silk_layout.py), mm-ruler 3D silkscreen previews
+  (render_silk_preview.py), and tether-drift/collision inspection
+  (silk_annotator.py --inspect) on a KiCad 10 .kicad_pcb. Use when annotating
+  a generated or existing KiCad PCB for JLCPCB assembly review, nudging or
+  syncing individual silkscreen labels, or fixing silk_overlap or
+  silk_over_copper DRC violations.
 ---
 
 # KiCad Silkscreen & Fabrication Markup
@@ -50,10 +53,26 @@ Helper module and inspection CLI: [silk_annotator.py](./scripts/silk_annotator.p
    - **THT & Test Points**: Place secondary-side `PCB_TEXT(fp)` / `PCB_TEXT(board)` labels so panel controls, power headers (e.g., `J_PWR`), and test points (e.g., `TP1`–`TP8`) can be probed and debugged from either side.
    - **Polarity**: Add IC Pin-1 solid dots (e.g., `U1`/`U2`), bold `0.25 mm` external cathode bars outside `D_SOD-123` Pad 1 (`K`), LED `+`/`-` markers (e.g., `D4`), pot Pin-1 `"1"` markers, and power header polarity callouts (e.g., `J_PWR` `-12V RED` stripe bar + `-12V` / `GND` / `+12V` rail labels).
    - **Board Name & Revision**: Place board title and revision strings from `board.GetTitleBlock()` (`board_name` / `revision_marking`) on `F.SilkS`/`B.SilkS` via `place_board_label(grid, board, side, f"{tb.GetTitle()} {tb.GetRevision()}".strip())`.
-   - **JLCPCB QR Placeholders**: Reserve and draw filled `5.0 x 5.0 mm` solid silkscreen squares on `F.SilkS` and `B.SilkS` (clearing all vias and same-side copper tracks). `silk_annotator.py --inspect` validates `PCB_SHAPE` silk graphics against pads/masks/`.Fab`/edges/texts and checks `5 × 5 mm` QR squares for zero vias or copper tracks.
+   - **JLCPCB QR Placeholders**: Reserve and draw a filled `5.0 x 5.0 mm` solid silkscreen square (one side such as `F.SilkS` is sufficient on dense 2-sided boards, or both sides when space permits), clearing all vias and same-side copper tracks. `silk_annotator.py --inspect` validates `PCB_SHAPE` silk graphics against pads/masks/`.Fab`/edges/texts and checks `5 × 5 mm` QR squares for zero vias or copper tracks.
 
 7. **`100%` Complete `B.Fab` Fabrication Notes**:
-   `analyze_pcb.py` (`fab_notes_completeness`) checks 6 fabrication metadata items (`ipc_class`, `surface_finish`, `board_thickness`, `copper_weight`, `solder_mask`, `material`). Call `add_standard_fab_notes(board, ...)` from [silk_annotator.py](./scripts/silk_annotator.py) to emit compliant `B.Fab` lines containing `IPC-6012 CLASS 2`, `THICKNESS: 1.6mm`, `1oz CU`, `FR4`, `ENIG / HASL-LF`, and `SOLDER MASK: BLACK`.
+   `analyze_pcb.py` (`fab_notes_completeness`) checks 6 fabrication metadata items (`ipc_class`, `surface_finish`, `board_thickness`, `copper_weight`, `solder_mask`, `material`). Call `add_standard_fab_notes(board, cx, y_below_board)` (placing notes outside `Edge.Cuts`, e.g., `board_y1 + 5.0 mm` centered in X, so long lines never cross footprint `.Fab` bodies on compact boards) to emit compliant `B.Fab` lines containing `IPC-6012 CLASS 2`, `THICKNESS: 1.6mm`, `1oz CU`, `FR4`, `ENIG / HASL-LF`, and `SOLDER MASK: BLACK`.
+
+## Iterative `silk_layout.json` Tuning & Visual Previews
+
+When polishing individual labels without regenerating copper/zones or syncing manual KiCad GUI moves, use [silk_layout.py](./scripts/silk_layout.py) and [render_silk_preview.py](./scripts/render_silk_preview.py) (see [silk_layout_workflow.md](./references/silk_layout_workflow.md) for the JSON schema and `B.SilkS` mirrored axis guide):
+
+```bash
+# Extract current silkscreen into silk_layout.json (or sync manual KiCad GUI moves)
+python3 .agents/skills/kicad-silkscreen-markup/scripts/silk_layout.py --pcb Board.kicad_pcb --extract --layout silk_layout.json
+
+# Inspect a component's labels and <= 5 mm neighbors, edit silk_layout.json, then restamp (~1 s)
+python3 .agents/skills/kicad-silkscreen-markup/scripts/silk_layout.py --pcb Board.kicad_pcb --show U1 C1
+python3 .agents/skills/kicad-silkscreen-markup/scripts/silk_layout.py --pcb Board.kicad_pcb --apply --layout silk_layout.json
+
+# Render zoomed or full-board 3D preview with board-local mm rulers into workspace-local analysis/
+.venv/bin/python .agents/skills/kicad-silkscreen-markup/scripts/render_silk_preview.py --pcb Board.kicad_pcb --ref U1
+```
 
 ## Verification
 

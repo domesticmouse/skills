@@ -102,3 +102,12 @@ What `verify_schematic.py` checks:
 2. Runs `kicad-cli sch erc --severity-all --format json` and fails on any ERC error or any warning other than benign `lib_symbol_mismatch` (override with `--strict-warnings` or `--allow-all-warnings`).
 3. Checks that the SKiDL `.net` contains no `(lib "NO_LIB")` fallback entries.
 4. Runs `kicad-cli sch export netlist --format kicadsexpr` on the `.kicad_sch` and performs a **pin-group parity comparison** against the SKiDL `.net` (ignoring `#PWR*`/`#FLG*` virtual power/flag symbols and `unconnected-*` `NC` pins) so silent schematic disconnects—such as `flatness=1.0` dropping `C1` Pin 1—fail immediately.
+
+---
+
+## 3. Alternative: Direct S-Expression Schematic Generator
+
+When a publication-grade, deterministic single-sheet (e.g., A3 landscape) schematic exceeds `schematizer`'s auto-router, drive the `.kicad_sch` S-expression directly from your SKiDL circuit (`build_circuit()`) so every value, footprint, custom field, and net connection retains a single source of truth:
+
+- Parse KiCad 10 `.kicad_sym` files (`KICAD10_SYMBOL_DIR`), recursively flatten `(extends ...)` symbol inheritance, and embed flattened `(lib_symbols ...)` definitions so `kicad-cli` renders cleanly without global library lookup issues.
+- Emit explicit wire coordinates, `global_label` / `power` symbols, `PWR_FLAG`s, and deterministic UUIDs, then verify `0` ERC errors and `100%` netlist pin-group parity with `verify_schematic.py`.
