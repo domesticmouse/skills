@@ -70,6 +70,8 @@ print(show("Regulator_Linear", "AMS1117-3.3"))
 search_footprints("SOT-223")
 ```
 
+For verified KiCad 10 Eurorack symbol IDs, pinouts, and the `Device:Q_NPN_BEC` trap (`Transistor_BJT:Q_NPN_BEC`), see [Eurorack & KiCad 10 Symbol Reference](./references/eurorack_parts.md).
+
 ## 3. Instantiating Parts
 
 Every physical component destined for a PCB **must** have a `footprint` attribute formatted as `"<Library>:<FootprintName>"`:
@@ -90,11 +92,13 @@ r_t = Part("Device", "R", dest=TEMPLATE, footprint="Resistor_SMD:R_0603_1608Metr
 c_t = Part("Device", "C", dest=TEMPLATE, footprint="Capacitor_SMD:C_0603_1608Metric")
 
 r1, r2 = r_t(2, value="10K")  # Two 10K resistors
-c_in, c_out = c_t(values=["10uF", "22uF"])
+c_in, c_out = c_t(value=["10uF", "22uF"])
 ```
 
+> **Warning (`value=` vs. `values=`):** `Part.__call__` expects **`value=`** (singular), not `values=`. Passing `values=[...]` is silently ignored in `skidl==3.0.0` and leaves default symbol values (`"C"`/`"R"`) on every copied part.
+
 * **Custom Fields & Properties (`part.fields` vs. Attributes)**:
-  * **Catalog & BOM Fields**: Because `SkidlBaseObject.__setattr__` only updates `part.fields` if the key *already* exists in `part.fields`, passing `LCSC="C14663"` to `Part()` or assigning `part.LCSC = "C14663"` sets a plain Python attribute that is **ignored** by `generate_xml()` and `generate_netlist()`. Always assign custom fields into the `part.fields` dict (`part.fields["LCSC"] = "C14663"`, `part.fields["MPN"] = "..."`, `part.fields["Notes"] = "Alt package: ..."`). Copies created from a `TEMPLATE` part automatically inherit a copy of `part.fields`.
+  * **Catalog, BOM & Silkscreen Fields**: Because `SkidlBaseObject.__setattr__` only updates `part.fields` if the key *already* exists in `part.fields`, passing `LCSC="C14663"` to `Part()` or assigning `part.LCSC = "C14663"` sets a plain Python attribute that is **ignored** by `generate_xml()` and `generate_netlist()`. Always assign custom fields into the `part.fields` dict (`part.fields["LCSC"] = "C14663"`, `part.fields["MPN"] = "..."`, `part.fields["Silkscreen"] = "..."` for concise jack/pot/switch/test-point labels consumed by `kicad-pcbnew-layout` and `kicad-silkscreen-markup` directly from `.net`, `part.fields["Notes"] = "Alt package: ..."`). Copies created from a `TEMPLATE` part automatically inherit a copy of `part.fields`.
   * **KiCad Boolean Flags**: Set `part.dnp = True` or `part.exclude_from_bom = True` as direct attributes on `part` (checked via `getattr(part, ...)` by `gen_netlist_comp`).
 * **Custom On-the-Fly Parts**: See [Advanced Patterns](./references/advanced_patterns.md) for creating schematic-less parts with `SkidlPart` and `Pin`.
 
@@ -167,12 +171,15 @@ generate_xml(file_="my_board_bom.xml")
 generate_pcb(fp_libs=["/path/to/footprints.pretty"])
 
 # 4. Optional Visual Diagrams (.svg / .kicad_sch / .dot) — ONLY when explicitly requested
-# Note: generate_schematic() uses schematizer's global router, which can raise
-# skidl.errors.RoutingFailure on dense multi-pin connectors.
+# Never call bare generate_schematic() defaults (auto_stub=False, retries=2 raises RoutingFailure),
+# never combine @subcircuit with flatness > 0, and add power:PWR_FLAG only AFTER generate_netlist().
+# See ./references/kicad10_schematics.md for all KiCad 10 + schematizer rules.
 generate_svg(filepath="output_dir", top_name="my_board", flatness=0.0)
-generate_schematic(filepath="output_dir", top_name="my_board")
+generate_schematic(filepath="output_dir", top_name="my_board", flatness=0.0, auto_stub=True, retries=5)
 generate_dot(file_="circuit.dot")
 ```
+
+* **KiCad 10 `.kicad_sch` Schematics**: When visual `.kicad_sch` files are requested, read [KiCad 10 Schematics & Verification](./references/kicad10_schematics.md) for the verified `@subcircuit` / `flatness=0.0` / negative-rail `.stub = True` / post-netlist `PWR_FLAG` rules, and run [verify_schematic.py](./scripts/verify_schematic.py) to validate ERC and `.net` pin-group parity.
 
 * **JLCPCB PCBA BOM & Live LCSC Part Search**:
   * To verify live JLCPCB stock, Basic vs. Extended library status (`$0` vs. `$3` feeder setup fee), datasheet links (`dataManualUrl`), and unit pricing before assigning LCSC part numbers, run [jlcpcb_search.py](./scripts/jlcpcb_search.py) (supports `--basic`, `-o/--output`, and `--delay` for multi-part BOM batches):
@@ -184,6 +191,7 @@ generate_dot(file_="circuit.dot")
   1. Confirm `ERC()` reported `0 errors, 0 warnings` in stdout and `<script>.erc` (note that SKiDL `3.0.0` still emits benign startup notices such as `fp-lib-table` or empty-root-tag warnings in `<script>.log` even when `.erc` is clean—confirm `.log` has no `Can't open file` or component errors).
   2. Verify `<script>.net` contains no `(lib "NO_LIB")` fallback entries (which indicate symbol files were unreadable inside a sandbox).
   3. Verify every row in `jlcpcb_bom.csv` has non-empty `Footprint` and `LCSC Part #` values.
+  4. If `.kicad_sch` schematics were generated, run `python3 .agents/skills/skidl/scripts/verify_schematic.py <schematic.kicad_sch> --netlist <script>.net` to confirm `0` non-`lib_symbol_mismatch` ERC violations and `100%` pin-group parity with `<script>.net`.
 
 ## 7. Code Quality & Linting (`ruff`)
 

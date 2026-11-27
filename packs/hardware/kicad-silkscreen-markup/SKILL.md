@@ -64,8 +64,11 @@ python3 .agents/skills/kicad-silkscreen-markup/scripts/silk_annotator.py --inspe
 # Confirm zero silk_overlap / silk_over_copper warnings and errors in KiCad DRC
 kicad-cli pcb drc --severity-all --format json --output /tmp/drc.json Board.kicad_pcb
 
-# Confirm fab_notes_completeness and zero assembly/silkscreen findings (.venv Python >= 3.10 required)
-.venv/bin/python .agents/skills/kicad/scripts/analyze_pcb.py Board.kicad_pcb --full --output /tmp/pcb_analysis.json
+# Optional: confirm fab_notes_completeness and zero assembly/silkscreen findings
+# (requires external aklofas/kicad-happy skill and .venv Python >= 3.10)
+if [ -f .agents/skills/kicad/scripts/analyze_pcb.py ]; then
+  .venv/bin/python .agents/skills/kicad/scripts/analyze_pcb.py Board.kicad_pcb --full --output /tmp/pcb_analysis.json
+fi
 ```
 
 Confirm `silk_annotator.py --inspect` reports `RESULT: PASS` (`100%` labeled non-fiducial footprints, `0` overlaps, `0` keepout hits, `0` out-of-bounds, `0` QR via/track hits, `0` tether drift hits, and `0` split pair hits).

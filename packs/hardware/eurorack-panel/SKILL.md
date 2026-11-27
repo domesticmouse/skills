@@ -83,10 +83,14 @@ To apply custom artwork generated from `panel_svg_spec.md` onto the blank front 
 2. In KiCad PCB Editor, open the generated `*_panel.kicad_pcb`, run **File → Import → Graphics...** at Scale `1.0` onto `F.SilkS` and `F.Mask`, anchor at the panel origin, **Ungroup** and delete the temporary registration frame, press **`B`** to refill zones, and re-run `kicad-cli pcb drc`. See Section 3 of [Eurorack Mechanical Specification & KiCad Footprint Offsets](./references/eurorack_mechanical_spec.md) for copper pullback and clearance rules.
 
 ### Step 3: Verify with KiCad PCB/Gerber Analyzers & 3D Renders
-1. **Static & Gerber Verification** (using the [`aklofas/kicad-happy`](https://github.com/aklofas/kicad-happy) `kicad` skill analyzers when present; use `.venv/bin/python` with Python `>= 3.10`):
+1. **Static & Gerber Verification** (optional, using the [`aklofas/kicad-happy`](https://github.com/aklofas/kicad-happy) `kicad` skill analyzers when installed; use `.venv/bin/python` with Python `>= 3.10`):
    ```bash
-   .venv/bin/python .agents/skills/kicad/scripts/analyze_pcb.py BufferedMult_Panel.kicad_pcb --full --output /tmp/panel_pcb.json
-   .venv/bin/python .agents/skills/kicad/scripts/analyze_gerbers.py production/panel/ --full --output /tmp/panel_gerbers.json
+   if [ -f .agents/skills/kicad/scripts/analyze_pcb.py ]; then
+     .venv/bin/python .agents/skills/kicad/scripts/analyze_pcb.py BufferedMult_Panel.kicad_pcb --full --output /tmp/panel_pcb.json
+   fi
+   if [ -f .agents/skills/kicad/scripts/analyze_gerbers.py ]; then
+     .venv/bin/python .agents/skills/kicad/scripts/analyze_gerbers.py production/panel/ --full --output /tmp/panel_gerbers.json
+   fi
    ```
    Confirm `0` DRC errors, `0` unconnected items, `0` Gerber errors, and drill counts matching the panel's component manifest (grounded jack/pot/switch PTH cutouts + `2` or `4` M3 NPTH oval mounting slots + any NPTH LED apertures; note that `analyze_gerbers.py` counts NPTH LED holes such as `3.2 mm` under `mounting_holes`, and `analyze_pcb.py` may emit benign `CP-002` `info` notices on copper-shield panels).
 2. **Visual 3D Raytraced Inspection** (always render into workspace-local paths—**never** `/tmp/`, where reading external images can trigger permission timeouts):

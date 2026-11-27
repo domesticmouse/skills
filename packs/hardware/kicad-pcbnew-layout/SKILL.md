@@ -47,7 +47,9 @@ Use this workflow when turning a KiCad `.net` netlist into a fully placed, route
 Run all checks after any final edit to the generator script:
 
 ```bash
-# 1. Mark executable (EXE001), lint against KiCad Python 3.9, format-check, and regenerate PCB
+# 1. Mark executable (EXE001), lint against KiCad's bundled Python 3.9 runtime
+#    (pcbnew runs on KiCad Python 3.9, whereas SKiDL scripts run in .venv Python 3.12-3.14),
+#    format-check, and regenerate PCB
 chmod +x generate_pcb.py
 ruff check --target-version py39 generate_pcb.py && ruff format --check generate_pcb.py
 python3 generate_pcb.py
@@ -61,8 +63,11 @@ python3 .agents/skills/kicad-silkscreen-markup/scripts/silk_annotator.py --inspe
 # 4. Eurorack mechanical check (if applicable)
 python3 .agents/skills/eurorack-panel/scripts/generate_eurorack_panel.py --main-pcb Board.kicad_pcb --inspect
 
-# 5. Full KiCad PCB static/DFM analysis (use .venv Python >= 3.10; kicad_core/sexp.py fails under KiCad Python 3.9)
-.venv/bin/python .agents/skills/kicad/scripts/analyze_pcb.py Board.kicad_pcb --full --output /tmp/pcb_analysis.json
+# 5. Optional full KiCad PCB static/DFM analysis (external aklofas/kicad-happy skill;
+#    use .venv Python >= 3.10 since kicad_core/sexp.py fails under KiCad Python 3.9)
+if [ -f .agents/skills/kicad/scripts/analyze_pcb.py ]; then
+  .venv/bin/python .agents/skills/kicad/scripts/analyze_pcb.py Board.kicad_pcb --full --output /tmp/pcb_analysis.json
+fi
 
 # 6. Verify DNP / fiducial exclusion in exported SMT placement CSV (substitute --side front if top-populated)
 kicad-cli pcb export pos --format csv --units mm --side back --smd-only --exclude-dnp --output /tmp/cpl_check.csv Board.kicad_pcb
@@ -74,8 +79,8 @@ kicad-cli pcb render --side bottom -o analysis/bottom.png --width 1200 --height 
 ```
 
 Confirm:
-- DRC (`--severity-all`) reports `0` violations/warnings, `0` unconnected items, and `0` schematic parity issues.
+- DRC (`--severity-all`) reports `0` violations/warnings, `0` unconnected items, and `0` schematic parity issues (if a `.kicad_sch` accompanies `Board.kicad_pcb`, verify it with `verify_schematic.py` for `kicad-cli sch export netlist` parity and post-netlist `PWR_FLAG` ERC checks first).
 - `silk_annotator.py --inspect` exits `0` with `RESULT: PASS` (`0` tether drift, `0` split pairs, `0` overlaps, `0` keepout hits, `0` QR via/track hits).
-- PCB analyzer reports `routing_complete: true`, `unrouted_net_count: 0`, `0` errors, and `0` `VP-001` via-in-pad warnings.
+- (When optional `aklofas/kicad-happy` is installed) PCB analyzer reports `routing_complete: true`, `unrouted_net_count: 0`, `0` errors, and `0` `VP-001` via-in-pad warnings.
 - Exported CPL CSV contains `0` `DNP` / `TP*` / `FID*` rows.
 - Workspace-local `analysis/top.png` and `analysis/bottom.png` renders show legible text, tented vias, clean clearances, and expected side placement.
