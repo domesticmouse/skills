@@ -223,6 +223,7 @@ class SchematicBuilderUnitTests(unittest.TestCase):
         self.assertTrue(meta["TP1"].dnp)
         self.assertTrue(meta["TP1"].exclude_from_bom)
         self.assertTrue(meta["TP1"].exclude_from_pos_files)
+        self.assertFalse(meta["TP1"].exclude_from_board)
         self.assertEqual(meta["TP1"].fields, {"LCSC": "C5199801"})
 
         self.assertTrue(meta["R1"].dnp)
@@ -231,16 +232,21 @@ class SchematicBuilderUnitTests(unittest.TestCase):
         self.assertEqual(meta["R1"].fields, {"MPN": "RC0603FR-0710KL"})
 
         if HAS_KICAD_SYMBOLS:
+            meta["R1"].exclude_from_board = True
             b = sb_mod.SchematicBuilder("parts", meta)
             b.place("TP1", 50.8, 50.8)
-            placed_sexp = sb_mod._format_sexp(b._symbol_nodes[0])
-            self.assertEqual(placed_sexp.count('(property "Footprint"'), 1)
-            self.assertEqual(placed_sexp.count('(property "Datasheet"'), 1)
-            self.assertEqual(placed_sexp.count('(property "Description"'), 1)
-            self.assertIn('(property "LCSC" "C5199801"', placed_sexp)
-            self.assertIn("(in_bom no)", placed_sexp)
-            self.assertIn("(on_board no)", placed_sexp)
-            self.assertIn("(dnp yes)", placed_sexp)
+            b.place("R1", 76.2, 50.8)
+            tp1_sexp = sb_mod._format_sexp(b._symbol_nodes[0])
+            self.assertEqual(tp1_sexp.count('(property "Footprint"'), 1)
+            self.assertEqual(tp1_sexp.count('(property "Datasheet"'), 1)
+            self.assertEqual(tp1_sexp.count('(property "Description"'), 1)
+            self.assertIn('(property "LCSC" "C5199801"', tp1_sexp)
+            self.assertIn("(in_bom no)", tp1_sexp)
+            self.assertIn("(on_board yes)", tp1_sexp)
+            self.assertIn("(dnp yes)", tp1_sexp)
+
+            r1_sexp = sb_mod._format_sexp(b._symbol_nodes[1])
+            self.assertIn("(on_board no)", r1_sexp)
 
     @unittest.skipUnless(HAS_KICAD_SYMBOLS, "requires KiCad 10 symbol libraries")
     def test_place_orientations_justify_and_duplicate_guard(self) -> None:
@@ -250,7 +256,12 @@ class SchematicBuilderUnitTests(unittest.TestCase):
                 lib_id="Device:R",
                 value="10k",
                 footprint="Resistor_SMD:R_0603_1608Metric",
-                fields={"Footprint": "dup_ignored", "LCSC": "C1"},
+                fields={
+                    "Footprint": "dup_ignored",
+                    "dnp": "yes",
+                    "exclude_from_bom": "1",
+                    "LCSC": "C1",
+                },
             ),
             "R2": sb_mod.PartMetadata(
                 ref="R2",
@@ -264,8 +275,27 @@ class SchematicBuilderUnitTests(unittest.TestCase):
                 value="47k",
                 footprint="Resistor_SMD:R_0603_1608Metric",
             ),
+            "R4": sb_mod.PartMetadata(
+                ref="R4",
+                lib_id="Device:R",
+                value="56k",
+                footprint="Resistor_SMD:R_0603_1608Metric",
+            ),
+            "R5": sb_mod.PartMetadata(
+                ref="R5",
+                lib_id="Device:R",
+                value="68k",
+                footprint="Resistor_SMD:R_0603_1608Metric",
+            ),
+            "R6": sb_mod.PartMetadata(
+                ref="R6",
+                lib_id="Device:R",
+                value="82k",
+                footprint="Resistor_SMD:R_0603_1608Metric",
+            ),
         }
         b = sb_mod.SchematicBuilder("orient", meta)
+        b.section_box("ZONE A", 38.1, 38.1, 165.1, 76.2)
         b.place("R1", 50.8, 50.8, angle=90, ref_justify="left", val_justify="right")
         b.place("R2", 76.2, 50.8, mirror="y", ref_justify="left", val_justify="right")
         b.place(
@@ -277,64 +307,98 @@ class SchematicBuilderUnitTests(unittest.TestCase):
             ref_justify="left",
             val_justify="right",
         )
+        b.place(
+            "R4",
+            127.0,
+            50.8,
+            angle=180,
+            ref_justify="left bottom",
+            val_justify="right top",
+        )
+        b.place("R5", 139.7, 50.8, angle=270, ref_justify="left", val_justify="right")
+        b.place(
+            "R6",
+            152.4,
+            50.8,
+            mirror="x",
+            ref_justify="left bottom",
+            val_justify="right top",
+        )
         with self.assertRaises(ValueError):
             b.place("R1", 50.8, 63.5)
 
         b.no_connect((50.8, 54.61))
         b.no_connect((50.8, 54.61))
         b.label("SIG_OUT", 101.6, 46.99, justify="center left")
+        b.label("SIG_DEF", 114.3, 46.99)
 
         sexp = b.to_sexp_str()
         placed_sexp = "\n".join(sb_mod._format_sexp(n) for n in b._symbol_nodes)
         self.assertNotIn("fields_autoplaced", placed_sexp)
         self.assertNotIn("(justify center)", sexp)
+        self.assertNotIn('(property "dnp"', placed_sexp)
+        self.assertNotIn('(property "exclude_from_bom"', placed_sexp)
+        self.assertIn('(property "LCSC" "C1"', placed_sexp)
+        self.assertIn('(text "ZONE A"', sexp)
+        self.assertIn("(rectangle\n", sexp)
         self.assertEqual(len(b._no_connects), 1)
         self.assertEqual(sexp.count("(no_connect\n"), 1)
-        self.assertEqual(placed_sexp.count('(property "Footprint"'), 3)
+        self.assertEqual(placed_sexp.count('(property "Footprint"'), 6)
         self.assertIn('(label "SIG_OUT"\n    (at 101.6 46.99 0)', sexp)
+        self.assertIn(
+            '(label "SIG_DEF"\n    (at 114.3 46.99 0)\n    (fields_autoplaced yes)\n    (effects (font (size 1.27 1.27)) (justify left bottom))',
+            sexp,
+        )
 
-        # Verify R1 (angle=90) and R2 (mirror="y") flipped left<->right, while R3 (prop_angle=0) did not
-        r1_node = b._symbol_nodes[0]
-        r2_node = b._symbol_nodes[1]
-        r3_node = b._symbol_nodes[2]
-        r1_ref_eff = sb_mod._find_child(
-            next(
+        def ref_prop(node: list[object]) -> list[object]:
+            return next(
                 p
-                for p in sb_mod._find_children(r1_node, "property")
+                for p in sb_mod._find_children(node, "property")
                 if p[1] == "Reference"
-            ),
-            "effects",
-        )
-        r2_ref_eff = sb_mod._find_child(
-            next(
-                p
-                for p in sb_mod._find_children(r2_node, "property")
-                if p[1] == "Reference"
-            ),
-            "effects",
-        )
-        r3_ref_eff = sb_mod._find_child(
-            next(
-                p
-                for p in sb_mod._find_children(r3_node, "property")
-                if p[1] == "Reference"
-            ),
-            "effects",
-        )
-        self.assertEqual(
-            sb_mod._find_child(r1_ref_eff, "justify"), ["justify", "right"]
-        )
-        self.assertEqual(
-            sb_mod._find_child(r2_ref_eff, "justify"), ["justify", "right"]
-        )
-        self.assertEqual(sb_mod._find_child(r3_ref_eff, "justify"), ["justify", "left"])
+            )
+
+        def ref_justify(node: list[object]) -> list[object] | None:
+            eff = sb_mod._find_child(ref_prop(node), "effects")
+            return sb_mod._find_child(eff, "justify")
+
+        def ref_angle(node: list[object]) -> str:
+            return str(sb_mod._find_child(ref_prop(node), "at")[3])
+
+        # Verify upright angles & compensation:
+        # R1 (angle=90 -> 270, no flip), R2 (mirror="y" -> 0, L<->R),
+        # R3 (prop_angle=0 override -> 0, no flip), R4 (angle=180 -> 0, L<->R & T<->B),
+        # R5 (angle=270 -> 90, no flip), R6 (mirror="x" -> 0, T<->B)
+        r1, r2, r3, r4, r5, r6 = b._symbol_nodes
+        self.assertEqual(ref_angle(r1), "270")
+        self.assertEqual(ref_justify(r1), ["justify", "left"])
+        self.assertEqual(ref_angle(r2), "0")
+        self.assertEqual(ref_justify(r2), ["justify", "right"])
+        self.assertEqual(ref_angle(r3), "0")
+        self.assertEqual(ref_justify(r3), ["justify", "left"])
+        self.assertEqual(ref_angle(r4), "0")
+        self.assertEqual(ref_justify(r4), ["justify", "right", "top"])
+        self.assertEqual(ref_angle(r5), "90")
+        self.assertEqual(ref_justify(r5), ["justify", "left"])
+        self.assertEqual(ref_angle(r6), "0")
+        self.assertEqual(ref_justify(r6), ["justify", "left", "top"])
 
     @unittest.skipUnless(HAS_KICAD_SYMBOLS, "requires KiCad 10 symbol libraries")
     def test_power_orientation_and_flags(self) -> None:
         b = sb_mod.SchematicBuilder("pwr", {})
-        b.power("+12V", 50.8, 50.8, angle=90, val_justify="left", pwr_flag=True)
-        b.power("GND", 76.2, 50.8, angle=180, val_justify="right")
+        b.power(
+            "+12V",
+            50.8,
+            50.8,
+            angle=90,
+            val_justify="left",
+            pwr_flag=True,
+            pwr_flag_offset=(5.08, 0),
+        )
+        b.power("GND", 76.2, 50.8, angle=180, val_justify="right", pwr_flag=True)
         b.power("-12V", 101.6, 50.8, angle=270, val_justify="left")
+        b.pwr_flag(114.3, 50.8, angle=180)
+        b.wire((50.8, 50.8), (50.8, 63.5))
+        b.wire((76.2, 50.8), (76.2, 63.5))
         with self.assertRaises(ValueError):
             b.power("GND", 50.8, 63.5, angle=45)
 
@@ -342,15 +406,22 @@ class SchematicBuilderUnitTests(unittest.TestCase):
         self.assertNotIn("(in_bom yes)", placed_sexp)
         self.assertNotIn("(on_board yes)", placed_sexp)
 
+        # +12V tap at (50.8, 50.8) has 2 wires + pin -> junction at rail, none at flag (55.88, 50.8).
+        # Co-located GND + PWR_FLAG at (76.2, 50.8) on a 1-wire stub must NOT emit a spurious dot.
+        junctions = b._compute_junctions()
+        self.assertIn((50.8, 50.8), junctions)
+        self.assertNotIn((55.88, 50.8), junctions)
+        self.assertNotIn((76.2, 50.8), junctions)
+
         p90_val = next(
             p
             for p in sb_mod._find_children(b._symbol_nodes[0], "property")
             if p[1] == "Value"
         )
-        self.assertEqual(sb_mod._find_child(p90_val, "at")[3], "90")
+        self.assertEqual(sb_mod._find_child(p90_val, "at")[3], "270")
         self.assertEqual(
             sb_mod._find_child(sb_mod._find_child(p90_val, "effects"), "justify"),
-            ["justify", "right"],
+            ["justify", "left"],
         )
 
         gnd180_val = next(
@@ -366,7 +437,7 @@ class SchematicBuilderUnitTests(unittest.TestCase):
 
         m270_val = next(
             p
-            for p in sb_mod._find_children(b._symbol_nodes[3], "property")
+            for p in sb_mod._find_children(b._symbol_nodes[4], "property")
             if p[1] == "Value"
         )
         self.assertEqual(sb_mod._find_child(m270_val, "at")[3], "90")
@@ -519,3 +590,163 @@ class SchematicBuilderUnitTests(unittest.TestCase):
         self.assertIn("=== COMPONENTS (1) ===", proc.stdout)
         self.assertIn("-12V", proc.stdout)
         self.assertIn("Transistor_BJT:BC848 extends=['Q_NPN_BEC']", proc.stdout)
+
+    def test_load_skidl_parts_metadata_and_cli_error_exit_codes(self) -> None:
+        import builtins
+        import types
+
+        class _FakeLib:
+            def __init__(self, *, filename: str = "", name: str = "") -> None:
+                self.filename = filename
+                self.name = name
+
+        class _FakePart:
+            def __init__(
+                self,
+                ref: str,
+                lib: object,
+                name: str,
+                val: str,
+                *,
+                dnp: bool = False,
+                exclude_from_bom: bool = False,
+            ) -> None:
+                self.ref = ref
+                self.lib = lib
+                self.name = name
+                self._val = val
+                self.footprint = "TestPoint:TestPoint_Pad_D1.0mm"
+                self.fields = {"LCSC": "C123", "dnp": "yes"}
+                self.dnp = dnp
+                self.exclude_from_bom = exclude_from_bom
+                self.exclude_from_pos_files = True
+                self.datasheet = "https://example.com/ds.pdf"
+                self.description = "Sample part"
+
+            def value_to_str(self) -> str:
+                return self._val
+
+        fake_circuit = types.SimpleNamespace(
+            parts=[
+                _FakePart(
+                    "TP1",
+                    _FakeLib(filename="/usr/share/kicad/Connector.kicad_sym"),
+                    "TestPoint",
+                    "TP_OUT",
+                    dnp=True,
+                    exclude_from_bom=True,
+                ),
+                _FakePart(
+                    "R1",
+                    _FakeLib(name="Device"),
+                    "R",
+                    "10k",
+                ),
+            ]
+        )
+        old_circuit = getattr(builtins, "default_circuit", None)
+        had_circuit = hasattr(builtins, "default_circuit")
+        builtins.default_circuit = fake_circuit
+        try:
+            meta = sb_mod.load_skidl_parts_metadata()
+        finally:
+            if had_circuit:
+                builtins.default_circuit = old_circuit
+            else:
+                delattr(builtins, "default_circuit")
+
+        self.assertEqual(meta["TP1"].lib_id, "Connector:TestPoint")
+        self.assertTrue(meta["TP1"].dnp)
+        self.assertTrue(meta["TP1"].exclude_from_bom)
+        self.assertTrue(meta["TP1"].exclude_from_pos_files)
+        self.assertEqual(meta["TP1"].datasheet, "https://example.com/ds.pdf")
+        self.assertEqual(meta["TP1"].description, "Sample part")
+        self.assertEqual(meta["R1"].lib_id, "Device:R")
+
+        bad_spec = subprocess.run(
+            [
+                sys.executable,
+                str(SCH_SCRIPT_DIR / "inspect_schematic_inputs.py"),
+                "--symbols",
+                "MissingColon",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(bad_spec.returncode, 1)
+        self.assertIn("INVALID SYMBOL SPEC", bad_spec.stderr)
+
+        bad_lib = subprocess.run(
+            [
+                sys.executable,
+                str(SCH_SCRIPT_DIR / "inspect_schematic_inputs.py"),
+                "--symbols",
+                "NonExistentLib:Part",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(bad_lib.returncode, 1)
+        self.assertIn("MISSING LIB", bad_lib.stderr)
+
+    @unittest.skipUnless(
+        HAS_KICAD_SYMBOLS and HAS_KICAD_CLI,
+        "requires KiCad 10 symbol libraries and kicad-cli",
+    )
+    def test_verify_schematic_dnp_and_exclude_from_bom_parity(self) -> None:
+        net_text = """(export
+  (version "D")
+  (components
+    (comp (ref "R1") (value "10k") (footprint "Resistor_SMD:R_0603_1608Metric")
+      (libsource (lib "Device") (part "R")))
+    (comp (ref "TP1") (value "TP_SIG") (footprint "TestPoint:TestPoint_Pad_D1.0mm")
+      (libsource (lib "Connector") (part "TestPoint"))
+      (property (name "dnp"))
+      (property (name "exclude_from_bom"))
+      (property (name "exclude_from_pos_files"))
+    )
+  )
+  (nets
+    (net (code "1") (name "GND")
+      (node (ref "R1") (pin "2")))
+    (net (code "2") (name "SIG")
+      (node (ref "R1") (pin "1"))
+      (node (ref "TP1") (pin "1")))
+  )
+)"""
+        with tempfile.TemporaryDirectory() as td:
+            tmp = pathlib.Path(td)
+            net_path = tmp / "dnp.net"
+            net_path.write_text(net_text, encoding="utf-8")
+
+            meta = sb_mod.load_netlist_parts_metadata(net_path)
+            b = sb_mod.SchematicBuilder("", meta)
+            b.place("R1", 50.8, 50.8, angle=270)
+            b.place("TP1", 63.5, 50.8, angle=90)
+            b.power("GND", 38.1, 50.8, angle=270, pwr_flag=True)
+            b.wire(b.pin("R1", 2), (38.1, 50.8))
+            b.wire(b.pin("R1", 1), b.pin("TP1", 1))
+            ok_sch = tmp / "ok.kicad_sch"
+            b.write(ok_sch)
+
+            summary = sb_mod.verify_schematic(ok_sch, net_path, quiet=True)
+            self.assertEqual(summary["components"], 2)
+            self.assertEqual(summary["total_nets"], 2)
+
+            # Flipping DNP off on TP1 must trigger a component parity mismatch
+            meta_bad = sb_mod.load_netlist_parts_metadata(net_path)
+            meta_bad["TP1"].dnp = False
+            b_bad = sb_mod.SchematicBuilder("", meta_bad)
+            b_bad.place("R1", 50.8, 50.8, angle=270)
+            b_bad.place("TP1", 63.5, 50.8, angle=90)
+            b_bad.power("GND", 38.1, 50.8, angle=270, pwr_flag=True)
+            b_bad.wire(b_bad.pin("R1", 2), (38.1, 50.8))
+            b_bad.wire(b_bad.pin("R1", 1), b_bad.pin("TP1", 1))
+            bad_sch = tmp / "bad_dnp.kicad_sch"
+            b_bad.write(bad_sch)
+
+            with self.assertRaises(RuntimeError) as ctx:
+                sb_mod.verify_schematic(bad_sch, net_path, quiet=True)
+            self.assertIn("Component mismatch", str(ctx.exception))

@@ -8,6 +8,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import uuid
 from dataclasses import dataclass, field
@@ -81,6 +82,9 @@ class PartMetadata:
     dnp: bool = False
     exclude_from_bom: bool = False
     exclude_from_pos_files: bool = False
+    exclude_from_board: bool = False
+    datasheet: str = ""
+    description: str = ""
 
 
 def _det_uuid(key: str) -> str:
@@ -228,23 +232,10 @@ def _extract_raw_symbol_sexp(lib_path: Path, sym_name: str) -> list[Any]:
     """Extract and parse a top-level `(symbol "<sym_name>" ...)` from a `.kicad_sym` file."""
     text = lib_path.read_text(encoding="utf-8")
     target = f'(symbol "{sym_name}"'
-    pos = 0
-    idx = -1
-    while True:
-        found = text.find(target, pos)
-        if found == -1:
-            break
-        # Must be top-level symbol inside kicad_symbol_lib (depth 1)
-        if found > 0 and text[found - 1] in ("\t", "\n", " "):
-            idx = found
-            break
-        pos = found + len(target)
-    if idx == -1:
-        raise KeyError(f"Symbol {sym_name!r} not found in {lib_path}")
-
     depth = 0
     in_quote = False
-    i = idx
+    idx = -1
+    i = 0
     n = len(text)
     while i < n:
         ch = text[i]
@@ -258,14 +249,20 @@ def _extract_raw_symbol_sexp(lib_path: Path, sym_name: str) -> list[Any]:
             if ch == '"':
                 in_quote = True
             elif ch == "(":
+                if idx == -1 and depth == 1 and text.startswith(target, i):
+                    idx = i
                 depth += 1
             elif ch == ")":
                 depth -= 1
-                if depth == 0:
+                if idx != -1 and depth == 1:
                     parsed = _parse_sexp(text[idx : i + 1])
                     return parsed[0]
         i += 1
-    raise ValueError(f"Unterminated symbol S-expression for {sym_name!r} in {lib_path}")
+    if idx != -1:
+        raise ValueError(
+            f"Unterminated symbol S-expression for {sym_name!r} in {lib_path}"
+        )
+    raise KeyError(f"Symbol {sym_name!r} not found in {lib_path}")
 
 
 def _rename_subsymbol(sub: list[Any], old_prefix: str, new_prefix: str) -> list[Any]:
@@ -430,8 +427,16 @@ def load_skidl_parts_metadata() -> dict[str, PartMetadata]:
         return meta
 
     for part in circuit.parts:
-        lib_path = str(getattr(part, "lib", ""))
-        lib_name = Path(lib_path).stem if lib_path else ""
+        lib_obj = getattr(part, "lib", None)
+        lib_name = ""
+        if lib_obj is not None:
+            filename = getattr(lib_obj, "filename", None)
+            if filename:
+                lib_name = Path(str(filename)).stem
+            elif getattr(lib_obj, "name", None):
+                lib_name = Path(str(lib_obj.name)).stem
+            elif isinstance(lib_obj, (str, Path)) and str(lib_obj):
+                lib_name = Path(str(lib_obj)).stem
         if not lib_name:
             lib_name = str(getattr(part, "lib_name", ""))
         sym_name = str(getattr(part, "name", ""))
@@ -450,6 +455,8 @@ def load_skidl_parts_metadata() -> dict[str, PartMetadata]:
             dnp=bool(getattr(part, "dnp", False)),
             exclude_from_bom=bool(getattr(part, "exclude_from_bom", False)),
             exclude_from_pos_files=bool(getattr(part, "exclude_from_pos_files", False)),
+            datasheet=str(getattr(part, "datasheet", "") or ""),
+            description=str(getattr(part, "description", "") or ""),
         )
     return meta
 
@@ -457,7 +464,53 @@ def load_skidl_parts_metadata() -> dict[str, PartMetadata]:
 _RESERVED_PROP_NAMES = frozenset(
     {"reference", "value", "footprint", "datasheet", "description"}
 )
+_IGNORED_NETLIST_PROP_NAMES = _RESERVED_PROP_NAMES | frozenset(
+    {
+        "dnp",
+        "exclude_from_bom",
+        "exclude_from_pos_files",
+        "sheetfile",
+        "sheetname",
+        "ki_keywords",
+        "ki_description",
+        "ki_fp_filters",
+    }
+)
 _TRUTHY_PROP_VALUES = frozenset({"", "1", "true", "yes"})
+
+
+def _extract_comp_flags(comp: list[Any]) -> tuple[bool, bool, bool]:
+    """Extract `(dnp, exclude_from_bom, exclude_from_pos_files)` from a netlist `comp`."""
+    prop_nodes = list(_find_children(comp, "property"))
+    props_n = _find_child(comp, "properties")
+    if props_n:
+        prop_nodes.extend(_find_children(props_n, "property"))
+
+    dnp = _find_child(comp, "dnp") is not None
+    ex_bom = _find_child(comp, "exclude_from_bom") is not None
+    ex_pos = _find_child(comp, "exclude_from_pos_files") is not None
+    for p_n in prop_nodes:
+        pn = _find_child(p_n, "name")
+        if not pn or len(pn) < 2:
+            continue
+        key_l = str(pn[1]).lower()
+        pv = _find_child(p_n, "value")
+        if pv and len(pv) >= 2:
+            val_l = str(pv[1]).strip().lower()
+            if key_l == "dnp" and val_l in (_TRUTHY_PROP_VALUES | {"dnp"}):
+                dnp = True
+            elif key_l == "exclude_from_bom" and val_l in _TRUTHY_PROP_VALUES:
+                ex_bom = True
+            elif key_l == "exclude_from_pos_files" and val_l in _TRUTHY_PROP_VALUES:
+                ex_pos = True
+        else:
+            if key_l == "dnp":
+                dnp = True
+            elif key_l == "exclude_from_bom":
+                ex_bom = True
+            elif key_l == "exclude_from_pos_files":
+                ex_pos = True
+    return dnp, ex_bom, ex_pos
 
 
 def load_netlist_parts_metadata(net_path: Path) -> dict[str, PartMetadata]:
@@ -473,11 +526,14 @@ def load_netlist_parts_metadata(net_path: Path) -> dict[str, PartMetadata]:
         val_n = _find_child(comp, "value")
         fp_n = _find_child(comp, "footprint")
         ls_n = _find_child(comp, "libsource")
+        ds_n = _find_child(comp, "datasheet")
         if not ref_n or not val_n:
             continue
         ref = str(ref_n[1])
         value = str(val_n[1])
         footprint = str(fp_n[1]) if fp_n else ""
+        datasheet = str(ds_n[1]) if ds_n and len(ds_n) >= 2 else ""
+        description = ""
         lib_id = ""
         if ls_n:
             lib_n = _find_child(ls_n, "lib")
@@ -505,32 +561,26 @@ def load_netlist_parts_metadata(net_path: Path) -> dict[str, PartMetadata]:
         props_n = _find_child(comp, "properties")
         if props_n:
             prop_nodes.extend(_find_children(props_n, "property"))
-
-        dnp = _find_child(comp, "dnp") is not None
-        ex_bom = _find_child(comp, "exclude_from_bom") is not None
-        ex_pos = _find_child(comp, "exclude_from_pos_files") is not None
         for p_n in prop_nodes:
             pn = _find_child(p_n, "name")
-            if not pn or len(pn) < 2:
-                continue
-            key_l = str(pn[1]).lower()
             pv = _find_child(p_n, "value")
-            if pv and len(pv) >= 2:
-                val_l = str(pv[1]).strip().lower()
-                if key_l == "dnp" and val_l in (_TRUTHY_PROP_VALUES | {"dnp"}):
-                    dnp = True
-                elif key_l == "exclude_from_bom" and val_l in _TRUTHY_PROP_VALUES:
-                    ex_bom = True
-                elif key_l == "exclude_from_pos_files" and val_l in _TRUTHY_PROP_VALUES:
-                    ex_pos = True
-            else:
-                if key_l == "dnp":
-                    dnp = True
-                elif key_l == "exclude_from_bom":
-                    ex_bom = True
-                elif key_l == "exclude_from_pos_files":
-                    ex_pos = True
+            if not pn or len(pn) < 2 or not pv or len(pv) < 2:
+                continue
+            pname = str(pn[1])
+            pval = str(pv[1])
+            key_l = pname.lower()
+            if key_l == "datasheet" and not datasheet and pval:
+                datasheet = pval
+            elif key_l == "description" and not description and pval:
+                description = pval
+            elif (
+                key_l not in _IGNORED_NETLIST_PROP_NAMES
+                and pval != ""
+                and pname not in fields
+            ):
+                fields[pname] = pval
 
+        dnp, ex_bom, ex_pos = _extract_comp_flags(comp)
         meta[ref] = PartMetadata(
             ref=ref,
             lib_id=lib_id,
@@ -540,6 +590,8 @@ def load_netlist_parts_metadata(net_path: Path) -> dict[str, PartMetadata]:
             dnp=dnp,
             exclude_from_bom=ex_bom,
             exclude_from_pos_files=ex_pos,
+            datasheet=datasheet,
+            description=description,
         )
     return meta
 
@@ -569,14 +621,41 @@ def _make_effects(
     return effects
 
 
-def _flip_justify(justify: str, flip_lr: bool) -> str:
-    """Swap `left <-> right` justification tokens when symbol rotation/mirroring inverts them."""
-    if not flip_lr:
+def _compensate_justify(
+    justify: str, *, flip_lr: bool = False, flip_tb: bool = False
+) -> str:
+    """Swap `left <-> right` and/or `top <-> bottom` to compensate KiCad orientation flips."""
+    if not flip_lr and not flip_tb:
         return justify
-    return " ".join(
-        "right" if t == "left" else "left" if t == "right" else t
-        for t in justify.split()
-    )
+    out: list[str] = []
+    for tok in justify.split():
+        if flip_lr and tok == "left":
+            out.append("right")
+        elif flip_lr and tok == "right":
+            out.append("left")
+        elif flip_tb and tok == "top":
+            out.append("bottom")
+        elif flip_tb and tok == "bottom":
+            out.append("top")
+        else:
+            out.append(tok)
+    return " ".join(out)
+
+
+def _text_transform(angle: int, mirror: str | None) -> tuple[int, bool, bool]:
+    """Return `(prop_angle, flip_lr, flip_tb)` so symbol text renders upright at 0 deg."""
+    if mirror == "x":
+        return 0, False, True
+    if mirror == "y":
+        return 0, True, False
+    norm = angle % 360
+    if norm == 90:
+        return 270, False, False
+    if norm == 180:
+        return 0, True, True
+    if norm == 270:
+        return 90, False, False
+    return 0, False, False
 
 
 def _prop_sexp(
@@ -634,6 +713,7 @@ class SchematicBuilder:
         self._wires: list[tuple[tuple[float, float], tuple[float, float]]] = []
         self._no_connects: list[tuple[float, float]] = []
         self._no_connect_keys: set[tuple[int, int]] = set()
+        self._shapes: list[list[Any]] = []
         self._texts: list[list[Any]] = []
         self._pwr_idx = 0
         self._flg_idx = 0
@@ -691,7 +771,8 @@ class SchematicBuilder:
             pin_coords[p.number] = (wx, wy)
             if p.name:
                 by_name.setdefault(p.name, []).append(p.number)
-            self._pin_points.add(_pt_key((wx, wy)))
+            pk = _pt_key((wx, wy))
+            self._pin_points.add(pk)
             pin_sexps.append(
                 [
                     "pin",
@@ -701,20 +782,22 @@ class SchematicBuilder:
             )
 
         sym_uuid = _det_uuid(f"sym:{ref}:{unit}")
-        datasheet = "~"
-        description = ""
+        lib_datasheet = "~"
+        lib_description = ""
         for pr in _find_children(lib_sym, "property"):
             if str(pr[1]) == "Datasheet":
-                datasheet = str(pr[2])
+                lib_datasheet = str(pr[2])
             elif str(pr[1]) == "Description":
-                description = str(pr[2])
+                lib_description = str(pr[2])
+        datasheet = meta.datasheet or lib_datasheet or "~"
+        description = meta.description or lib_description
 
         rx, ry = round(sx + ref_offset[0], 4), round(sy + ref_offset[1], 4)
         vx, vy = round(sx + val_offset[0], 4), round(sy + val_offset[1], 4)
-        text_ang = (angle % 180) if prop_angle is None else prop_angle
-        flip_lr = (
-            ((angle in (90, 180)) or (mirror == "y")) if prop_angle is None else False
-        )
+        if prop_angle is None:
+            text_ang, flip_lr, flip_tb = _text_transform(angle, mirror)
+        else:
+            text_ang, flip_lr, flip_tb = prop_angle, False, False
 
         node: list[Any] = [
             "symbol",
@@ -728,7 +811,7 @@ class SchematicBuilder:
                 ["unit", str(unit)],
                 ["exclude_from_sim", "no"],
                 ["in_bom", "no" if meta.exclude_from_bom else "yes"],
-                ["on_board", "no" if meta.exclude_from_pos_files else "yes"],
+                ["on_board", "no" if meta.exclude_from_board else "yes"],
                 ["dnp", "yes" if meta.dnp else "no"],
                 ["uuid", sym_uuid],
                 _prop_sexp(
@@ -738,7 +821,9 @@ class SchematicBuilder:
                     ry,
                     angle=text_ang,
                     size=ref_size,
-                    justify=_flip_justify(ref_justify, flip_lr),
+                    justify=_compensate_justify(
+                        ref_justify, flip_lr=flip_lr, flip_tb=flip_tb
+                    ),
                     hide=hide_ref,
                 ),
                 _prop_sexp(
@@ -748,7 +833,9 @@ class SchematicBuilder:
                     vy,
                     angle=text_ang,
                     size=val_size,
-                    justify=_flip_justify(val_justify, flip_lr),
+                    justify=_compensate_justify(
+                        val_justify, flip_lr=flip_lr, flip_tb=flip_tb
+                    ),
                     hide=hide_val,
                 ),
                 _prop_sexp("Footprint", meta.footprint, sx, sy, hide=True),
@@ -757,7 +844,7 @@ class SchematicBuilder:
             ]
         )
         for fk, fv in meta.fields.items():
-            if fk.lower() not in _RESERVED_PROP_NAMES:
+            if fk.lower() not in _IGNORED_NETLIST_PROP_NAMES:
                 node.append(_prop_sexp(fk, fv, sx, sy, hide=True))
         node.extend(pin_sexps)
         node.append(
@@ -814,6 +901,59 @@ class SchematicBuilder:
                 raise KeyError(f"Ambiguous pin name {pid!r} on {ref}: matches {nums}")
         raise KeyError(f"Pin {pid!r} not found on {ref!r} (unit={unit})")
 
+    def pwr_flag(
+        self,
+        x: float,
+        y: float,
+        *,
+        angle: int = 0,
+    ) -> tuple[float, float]:
+        """Place a standalone `power:PWR_FLAG` symbol on `(x, y)`."""
+        if angle not in (0, 90, 180, 270):
+            raise ValueError(
+                f"Unsupported PWR_FLAG angle {angle}; expected 0, 90, 180, or 270"
+            )
+        self._ensure_symbol("power:PWR_FLAG")
+        fx = _snap_grid(x)
+        fy = _snap_grid(y)
+        self._flg_idx += 1
+        fref = f"#FLG{self._flg_idx:02d}"
+        fuuid = _det_uuid(f"flg:{fref}:{fx}:{fy}")
+        pk = _pt_key((fx, fy))
+        self._pin_points.add(pk)
+        fnode: list[Any] = [
+            "symbol",
+            ["lib_id", Quoted("power:PWR_FLAG")],
+            ["at", f"{fx:g}", f"{fy:g}", str(angle)],
+            ["unit", "1"],
+            ["exclude_from_sim", "yes"],
+            ["in_bom", "no"],
+            ["on_board", "no"],
+            ["dnp", "no"],
+            ["uuid", fuuid],
+            _prop_sexp("Reference", fref, fx, fy, hide=True),
+            _prop_sexp("Value", "PWR_FLAG", fx, fy, hide=True),
+            _prop_sexp("Footprint", "", fx, fy, hide=True),
+            _prop_sexp("Datasheet", "", fx, fy, hide=True),
+            _prop_sexp("Description", "", fx, fy, hide=True),
+            ["pin", Quoted("1"), ["uuid", _det_uuid(f"flg_pin:{fref}")]],
+            [
+                "instances",
+                [
+                    "project",
+                    Quoted(self.project_name),
+                    [
+                        "path",
+                        Quoted(f"/{self.root_uuid}"),
+                        ["reference", Quoted(fref)],
+                        ["unit", "1"],
+                    ],
+                ],
+            ],
+        ]
+        self._symbol_nodes.append(fnode)
+        return (fx, fy)
+
     def power(
         self,
         rail: str,
@@ -824,6 +964,7 @@ class SchematicBuilder:
         val_offset: tuple[float, float] | None = None,
         val_justify: str = "center",
         pwr_flag: bool = False,
+        pwr_flag_offset: tuple[float, float] = (0.0, 0.0),
     ) -> tuple[float, float]:
         """Place a `power:<rail>` symbol at `(x, y)` (optionally attaching `power:PWR_FLAG`)."""
         if angle not in (0, 90, 180, 270):
@@ -837,7 +978,8 @@ class SchematicBuilder:
         self._pwr_idx += 1
         ref = f"#PWR{self._pwr_idx:03d}"
         sym_uuid = _det_uuid(f"pwr:{ref}:{sx}:{sy}")
-        self._pin_points.add(_pt_key((sx, sy)))
+        pk = _pt_key((sx, sy))
+        self._pin_points.add(pk)
 
         if val_offset is None:
             if angle == 0:
@@ -849,8 +991,10 @@ class SchematicBuilder:
             else:  # 270
                 val_offset = (-3.81, 0.0) if rail == "GND" else (3.81, 0.0)
         vx, vy = round(sx + val_offset[0], 4), round(sy + val_offset[1], 4)
-        text_ang = angle % 180
-        mapped_justify = _flip_justify(val_justify, angle in (90, 180))
+        text_ang, flip_lr, flip_tb = _text_transform(angle, None)
+        mapped_justify = _compensate_justify(
+            val_justify, flip_lr=flip_lr, flip_tb=flip_tb
+        )
 
         node: list[Any] = [
             "symbol",
@@ -861,7 +1005,6 @@ class SchematicBuilder:
             ["in_bom", "no"],
             ["on_board", "no"],
             ["dnp", "no"],
-            ["fields_autoplaced", "yes"],
             ["uuid", sym_uuid],
             _prop_sexp("Reference", ref, sx, sy, hide=True),
             _prop_sexp(
@@ -893,42 +1036,11 @@ class SchematicBuilder:
         self._symbol_nodes.append(node)
 
         if pwr_flag:
-            self._ensure_symbol("power:PWR_FLAG")
-            self._flg_idx += 1
-            fref = f"#FLG{self._flg_idx:02d}"
-            fuuid = _det_uuid(f"flg:{fref}:{sx}:{sy}")
-            fnode: list[Any] = [
-                "symbol",
-                ["lib_id", Quoted("power:PWR_FLAG")],
-                ["at", f"{sx:g}", f"{sy:g}", str(angle)],
-                ["unit", "1"],
-                ["exclude_from_sim", "yes"],
-                ["in_bom", "no"],
-                ["on_board", "no"],
-                ["dnp", "no"],
-                ["fields_autoplaced", "yes"],
-                ["uuid", fuuid],
-                _prop_sexp("Reference", fref, sx, sy, hide=True),
-                _prop_sexp("Value", "PWR_FLAG", sx, sy, hide=True),
-                _prop_sexp("Footprint", "", sx, sy, hide=True),
-                _prop_sexp("Datasheet", "", sx, sy, hide=True),
-                _prop_sexp("Description", "", sx, sy, hide=True),
-                ["pin", Quoted("1"), ["uuid", _det_uuid(f"flg_pin:{fref}")]],
-                [
-                    "instances",
-                    [
-                        "project",
-                        Quoted(self.project_name),
-                        [
-                            "path",
-                            Quoted(f"/{self.root_uuid}"),
-                            ["reference", Quoted(fref)],
-                            ["unit", "1"],
-                        ],
-                    ],
-                ],
-            ]
-            self._symbol_nodes.append(fnode)
+            fx = _snap_grid(sx + pwr_flag_offset[0])
+            fy = _snap_grid(sy + pwr_flag_offset[1])
+            self.pwr_flag(fx, fy, angle=angle)
+            if _pt_key((fx, fy)) != pk:
+                self.wire_hv((sx, sy), (fx, fy))
 
         return (sx, sy)
 
@@ -988,6 +1100,61 @@ class SchematicBuilder:
             ]
         )
 
+    def rectangle(
+        self,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
+        *,
+        width: float = 0.2,
+        stroke_type: str = "dash",
+        color: tuple[int, int, int, float] = (90, 100, 120, 1),
+        fill_type: str = "none",
+    ) -> None:
+        """Add a graphic rectangle frame on the schematic sheet."""
+        rx1, ry1 = round(x1, 4), round(y1, 4)
+        rx2, ry2 = round(x2, 4), round(y2, 4)
+        self._shapes.append(
+            [
+                "rectangle",
+                ["start", f"{rx1:g}", f"{ry1:g}"],
+                ["end", f"{rx2:g}", f"{ry2:g}"],
+                [
+                    "stroke",
+                    ["width", f"{width:g}"],
+                    ["type", stroke_type],
+                    ["color", *(f"{c:g}" for c in color)],
+                ],
+                ["fill", ["type", fill_type]],
+                [
+                    "uuid",
+                    _det_uuid(f"rect:{rx1}:{ry1}:{rx2}:{ry2}:{len(self._shapes)}"),
+                ],
+            ]
+        )
+
+    def section_box(
+        self,
+        title: str,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
+        *,
+        title_size: float = 1.6,
+    ) -> None:
+        """Draw a dashed functional section frame with a bold top-left caption."""
+        self.rectangle(x1, y1, x2, y2)
+        self.text(
+            title,
+            round(x1 + 2.54, 4),
+            round(y1 + 3.81, 4),
+            size=title_size,
+            bold=True,
+            justify="left",
+        )
+
     def label(
         self,
         name: str,
@@ -996,7 +1163,7 @@ class SchematicBuilder:
         *,
         angle: int = 0,
         size: float = 1.27,
-        justify: str = "left",
+        justify: str = "left bottom",
     ) -> tuple[float, float]:
         """Place a KiCad net `(label ...)` on the grid at `(x, y)`."""
         if angle not in (0, 90, 180, 270):
@@ -1135,6 +1302,7 @@ class SchematicBuilder:
                 ]
             )
 
+        root.extend(self._shapes)
         root.extend(self._texts)
         root.extend(self._symbol_nodes)
         root.append(["sheet_instances", ["path", Quoted("/"), ["page", Quoted("1")]]])
@@ -1160,13 +1328,13 @@ def _is_unconnected_net(name: str) -> bool:
 def _parse_netlist_graph(
     net_path: Path,
 ) -> tuple[
-    dict[str, tuple[str, str]],
+    dict[str, tuple[str, str, bool, bool]],
     dict[frozenset[tuple[str, str]], str],
     dict[tuple[str, str], str],
 ]:
     """Parse a KiCad netlist into `(comps, multi_pin_nets, single_pin_nets)`."""
     tree = _parse_sexp(net_path.read_text(encoding="utf-8"))[0]
-    comps: dict[str, tuple[str, str]] = {}
+    comps: dict[str, tuple[str, str, bool, bool]] = {}
     comps_node = _find_child(tree, "components")
     if comps_node:
         for comp in _find_children(comps_node, "comp"):
@@ -1178,7 +1346,13 @@ def _parse_netlist_graph(
             ref = str(ref_n[1])
             if ref.startswith("#"):
                 continue
-            comps[ref] = (str(val_n[1]), str(fp_n[1]) if fp_n else "")
+            dnp, ex_bom, _ex_pos = _extract_comp_flags(comp)
+            comps[ref] = (
+                str(val_n[1]),
+                str(fp_n[1]) if fp_n else "",
+                dnp,
+                ex_bom,
+            )
 
     multi_nets: dict[frozenset[tuple[str, str]], str] = {}
     single_nets: dict[tuple[str, str], str] = {}
@@ -1211,17 +1385,18 @@ def verify_schematic(
     expected_net_path: str | Path,
     *,
     kicad_cli: str | Path | None = None,
+    quiet: bool = False,
 ) -> dict[str, Any]:
     """Run KiCad 10 ERC and verify 100% component & net equivalence against `expected_net_path`."""
     sch = Path(sch_path).resolve()
     exp_net = Path(expected_net_path).resolve()
     cli = Path(kicad_cli) if kicad_cli else _default_kicad_cli()
 
-    env = os.environ.copy()
-    env.setdefault("XDG_DATA_HOME", "/tmp/xdg_data")
-
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
+        env = os.environ.copy()
+        if sys.platform == "darwin":
+            env.setdefault("XDG_DATA_HOME", str(tmp / "xdg_data"))
         erc_json = tmp / "erc.json"
         sch_net = tmp / "exported.net"
 
@@ -1347,11 +1522,12 @@ def verify_schematic(
             "total_nets": len(got_multi) + len(got_single),
             "lib_notices": len(lib_warns),
         }
-        print(
-            f"Verified {sch.name}: 0 ERC errors (0 warnings, "
-            f"{len(lib_warns)} unconfigured-lib notices), "
-            f"{len(got_comps)} components & {summary['total_nets']} nets "
-            f"({len(got_multi)} multi-pin + {len(got_single)} single-pin) "
-            f"match {exp_net.name} 100%."
-        )
+        if not quiet:
+            print(
+                f"Verified {sch.name}: 0 ERC errors (0 warnings, "
+                f"{len(lib_warns)} unconfigured-lib notices), "
+                f"{len(got_comps)} components & {summary['total_nets']} nets "
+                f"({len(got_multi)} multi-pin + {len(got_single)} single-pin) "
+                f"match {exp_net.name} 100%."
+            )
         return summary

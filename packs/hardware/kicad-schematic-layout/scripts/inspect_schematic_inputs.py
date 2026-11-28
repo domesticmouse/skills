@@ -44,15 +44,19 @@ def _resolve_extends_chain(lib_path: Path, sym_name: str) -> list[str]:
     return chain
 
 
-def _inspect_symbol(lib_name: str, sym_name: str, symbol_dir: Path) -> None:
+def _inspect_symbol(lib_name: str, sym_name: str, symbol_dir: Path) -> bool:
     """Print resolved extends chain, pins, and graphic bounding box for a KiCad 10 symbol."""
     lib_path = symbol_dir / f"{lib_name}.kicad_sym"
     if not lib_path.exists():
         print(f"MISSING LIB: {lib_path}", file=sys.stderr)
-        return
+        return False
 
-    chain = _resolve_extends_chain(lib_path, sym_name)
-    flat, _ = sb.load_kicad10_symbol(lib_name, sym_name, symbol_dir=symbol_dir)
+    try:
+        chain = _resolve_extends_chain(lib_path, sym_name)
+        flat, _ = sb.load_kicad10_symbol(lib_name, sym_name, symbol_dir=symbol_dir)
+    except (KeyError, ValueError) as exc:
+        print(f"MISSING SYMBOL {lib_name}:{sym_name}: {exc}", file=sys.stderr)
+        return False
 
     xs: list[float] = []
     ys: list[float] = []
@@ -108,6 +112,7 @@ def _inspect_symbol(lib_name: str, sym_name: str, symbol_dir: Path) -> None:
             f"  u{unit_idx} pin {pnum:>3s} ({pname:6s}) {ptype:10s} "
             f"at=({px:6.2f}, {py:6.2f}) ang={pang:3.0f} len={plen:.3f}"
         )
+    return True
 
 
 def _print_netlist_summary(net_path: Path) -> set[str]:
@@ -122,7 +127,16 @@ def _print_netlist_summary(net_path: Path) -> set[str]:
         meta = parts[ref]
         if meta.lib_id:
             lib_ids.add(meta.lib_id)
-        print(f"  {ref:8s} | {meta.value:18s} | {meta.lib_id:34s} | {meta.footprint}")
+        flags: list[str] = []
+        if meta.dnp:
+            flags.append("DNP")
+        if meta.exclude_from_bom:
+            flags.append("NO-BOM")
+        flag_str = f" [{' '.join(flags)}]" if flags else ""
+        print(
+            f"  {ref:8s} | {meta.value:18s} | {meta.lib_id:34s} | "
+            f"{meta.footprint}{flag_str}"
+        )
 
     total_nets = len(multi_nets) + len(single_nets)
     print(f"\n=== NETS ({total_nets}) ===")
@@ -137,7 +151,9 @@ def _print_netlist_summary(net_path: Path) -> set[str]:
 def _verify_schematic(sch_path: Path, net_path: Path, kicad_cli: Path) -> int:
     """Run KiCad 10 ERC and compare schematic netlist against `.net`. Returns exit code."""
     try:
-        summary = sb.verify_schematic(sch_path, net_path, kicad_cli=kicad_cli)
+        summary = sb.verify_schematic(
+            sch_path, net_path, kicad_cli=kicad_cli, quiet=True
+        )
     except (RuntimeError, ValueError, OSError) as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         return 1
@@ -148,6 +164,13 @@ def _verify_schematic(sch_path: Path, net_path: Path, kicad_cli: Path) -> int:
         f"{summary['components']} components & {summary['total_nets']} nets "
         f"match {summary['netlist']} 100%."
     )
+    if summary["lib_notices"] > 0:
+        print(
+            "NOTE: unconfigured-lib notices were emitted because global KiCad "
+            "sym-lib-table/fp-lib-table could not be read in this environment; "
+            "re-run `kicad-cli sch erc --severity-all` with global library tables "
+            "accessible to confirm 0 `lib_symbol_mismatch` warnings."
+        )
     return 0
 
 
@@ -199,19 +222,28 @@ def main() -> int:
         if args.symbols_from_net:
             lib_ids.extend(sorted(net_lib_ids))
 
+    exit_code = 0
     if lib_ids:
         print("\n=== KICAD 10 SYMBOL PINOUTS ===")
         seen: set[str] = set()
         for item in lib_ids:
-            if item in seen or ":" not in item:
+            if ":" not in item:
+                print(
+                    f"INVALID SYMBOL SPEC {item!r}: expected Lib:Symbol",
+                    file=sys.stderr,
+                )
+                exit_code = 1
+                continue
+            if item in seen:
                 continue
             seen.add(item)
             lib_name, sym_name = item.split(":", 1)
-            _inspect_symbol(lib_name, sym_name, args.symbol_dir)
+            if not _inspect_symbol(lib_name, sym_name, args.symbol_dir):
+                exit_code = 1
 
     if not args.net and not lib_ids:
         parser.print_help()
-    return 0
+    return exit_code
 
 
 if __name__ == "__main__":
