@@ -43,7 +43,7 @@ from silk_annotator import (
     inspect_board_silk,
     is_fiducial_ref,
     is_mounting_hole,
-    is_passive_ref,
+    is_passive_footprint,
     is_smd_footprint,
     place_ref_val_pair,
 )
@@ -533,7 +533,7 @@ def _auto_place_remaining(
         fp = footprints[ref]
         pos = fp.GetPosition()
         return (
-            1 if is_passive_ref(ref) else 0,
+            1 if is_passive_footprint(fp) else 0,
             pcbnew.ToMM(pos.y),
             pcbnew.ToMM(pos.x),
             ref,
@@ -553,7 +553,7 @@ def _auto_place_remaining(
     for ref in ordered_refs:
         fp = footprints[ref]
         _, val_str = get_fp_silkscreen_field(fp)
-        if is_passive_ref(ref):
+        if is_passive_footprint(fp):
             val_str = compact_passive_value(val_str or fp.GetValue())
         max_ed = 3.5 if is_smd_footprint(fp) else 5.5
         res = place_ref_val_pair(

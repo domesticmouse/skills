@@ -91,7 +91,8 @@ If you call `fp.SetFPID(pcbnew.LIB_ID(lib, fp_name))`, `kicad-cli pcb drc` looks
   fp.SetExcludedFromBOM(True)
   fp.SetExcludedFromPosFiles(True)
   ```
-- Note that SKiDL `3.0.0` emits valueless `(property (name "dnp"))` and `(property (name "exclude_from_bom"))` nodes in `.net` files (without a `(value ...)` child), so netlist parsers must treat `(property (name "dnp"))` as `True` even without `(value ...)`.
-- When pouring `GND` copper zones (`pcbnew.ZONE`):
+- Note that SKiDL `3.0.0` emits valueless `(property (name "dnp"))` and `(property (name "exclude_from_bom"))` nodes in `.net` files (without a `(value ...)` child), so netlist parsers must treat `(property (name "dnp"))` as `True` even without `(value ...)`. `parse_netlist()` also honors `JLCPCB_Class`: `"DNP"` marks `dnp=True` (excluding both BOM and POS), while `"Manual THT"` sets `exclude_from_pos_files=True` while preserving BOM inclusion.
+- Pass `show_ref=False` to `populate_footprints()` when you want default footprint references hidden on `.Fab` prior to running a value-only or custom silkscreen pass.
+- For standard 2-layer routing, GND via stitching, and zone fills, prefer `route_and_pour_board(...)` in `pcbnew_layout_template.py`. When pouring `GND` copper zones (`pcbnew.ZONE`):
   - Enable island removal if available (`zone.SetIslandRemovalMode(pcbnew.ISLAND_REMOVAL_MODE_ALWAYS)`) to eliminate floating dead-copper islands.
   - Call `board.BuildConnectivity()` **before and after** `pcbnew.ZONE_FILLER(board).Fill(board.Zones())`. Skipping either call can leave stale ratsnest connections or DRC `unconnected_items` on `Zone [GND]`.

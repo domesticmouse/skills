@@ -85,7 +85,7 @@ PANEL_COMPONENT_SPECS: list[dict] = [
         "pattern": re.compile(
             r"Potentiometer.*Vertical|RK09K|RV09AF|RD901F", re.IGNORECASE
         ),
-        "default_offset": (2.5, -7.0),
+        "default_offset": (7.5, 2.5),
         "drill_mm": 7.2,
         "pad_mm": 9.6,
         "keepout_mm": 11.0,
@@ -112,6 +112,15 @@ PANEL_COMPONENT_SPECS: list[dict] = [
         "pad_mm": 8.2,
         "keepout_mm": 9.0,
         "grounded": True,
+    },
+    {
+        "kind": "pushbutton_12mm",
+        "pattern": re.compile(r"SW_PUSH[-_]?12mm|TL1100", re.IGNORECASE),
+        "default_offset": (6.25, 2.5),
+        "drill_mm": 12.5,
+        "pad_mm": 12.5,
+        "keepout_mm": 13.5,
+        "grounded": False,
     },
     {
         "kind": "led_5mm",
@@ -504,6 +513,10 @@ def format_jack_footprint(
         "switch": (
             f"Eurorack_Panel:SwitchHole_Mini_{drill_mm:g}mm",
             "eurorack panel hole switch toggle",
+        ),
+        "pushbutton_12mm": (
+            f"Eurorack_Panel:PushButtonHole_12mm_{drill_mm:g}mm_NPTH",
+            "eurorack panel hole pushbutton 12mm npth",
         ),
         "led_3mm": (
             f"Eurorack_Panel:LEDHole_3mm_{drill_mm:g}mm_NPTH",

@@ -52,6 +52,14 @@ def is_passive_ref(ref: str) -> bool:
     )
 
 
+def is_passive_footprint(fp: pcbnew.FOOTPRINT) -> bool:
+    """Return True for fixed passive footprints (R*/C*), excluding potentiometers/trimmers."""
+    if not is_passive_ref(fp.GetReference()):
+        return False
+    fpid = fp.GetFPIDAsString().lower()
+    return "potentiometer" not in fpid and "trimmer" not in fpid
+
+
 def compact_passive_value(val_text: str) -> str:
     """Extract the concise primary value token for passives (e.g., '100k 0.1%' -> '100k')."""
     tokens = val_text.strip().split()
@@ -173,6 +181,7 @@ def _pad_mask_margin_mm(
 def get_fp_silkscreen_field(fp: pcbnew.FOOTPRINT) -> tuple[str, str]:
     """Derive (full_label, secondary_value_or_func) from footprint `Silkscreen` field or Value."""
     ref = fp.GetReference().strip()
+    passive = is_passive_footprint(fp)
     spec = ""
     for fld in fp.GetFields():
         if fld.GetName() == "Silkscreen":
@@ -182,15 +191,15 @@ def get_fp_silkscreen_field(fp: pcbnew.FOOTPRINT) -> tuple[str, str]:
         tokens = spec.split(None, 1)
         if tokens[0].upper() == ref.upper():
             rest = tokens[1] if len(tokens) > 1 else ""
-            if is_passive_ref(ref):
+            if passive:
                 val = rest or fp.GetValue().strip()
                 return (val, val)
             return (spec, rest)
-        if is_passive_ref(ref):
+        if passive:
             return (spec, spec)
         return (f"{ref} {spec}".strip(), spec)
     val = fp.GetValue().strip()
-    if is_passive_ref(ref):
+    if passive:
         return (val, val)
     return (f"{ref} {val}".strip(), val)
 
@@ -226,6 +235,28 @@ class SilkGrid:
             else list(board.GetFootprints())
         )
         self.footprints = fp_list
+        keepout_fps = list(fp_list)
+        if footprints is not None:
+            known_fids = {
+                (
+                    fp.GetReference().strip().upper(),
+                    round(pcbnew.ToMM(fp.GetPosition().x), 3),
+                    round(pcbnew.ToMM(fp.GetPosition().y), 3),
+                )
+                for fp in fp_list
+                if is_fiducial_ref(fp.GetReference())
+            }
+            for bfp in board.GetFootprints():
+                bref = bfp.GetReference().strip().upper()
+                if is_fiducial_ref(bref):
+                    bkey = (
+                        bref,
+                        round(pcbnew.ToMM(bfp.GetPosition().x), 3),
+                        round(pcbnew.ToMM(bfp.GetPosition().y), 3),
+                    )
+                    if bkey not in known_fids:
+                        keepout_fps.append(bfp)
+                        known_fids.add(bkey)
         ds = board.GetDesignSettings()
         board_mask = (
             pcbnew.ToMM(ds.m_SolderMaskExpansion)
@@ -234,7 +265,7 @@ class SilkGrid:
         )
         pad_pad = 0.25
         silk_pad = 0.20
-        for fp in fp_list:
+        for fp in keepout_fps:
             for pad in fp.Pads():
                 _, _, x0, y0, x1, y1, layers = extract_pad_geometry(pad)
                 lset = pad.GetLayerSet()
@@ -365,6 +396,12 @@ class SilkGrid:
 
     def reserve(self, side: int, x0: float, y0: float, x1: float, y1: float) -> None:
         self.placed[side].append((x0, y0, x1, y1))
+
+    def reserve_keepout(
+        self, side: int, x0: float, y0: float, x1: float, y1: float
+    ) -> None:
+        """Register an additional keepout rectangle on `side` (0=F.SilkS, 1=B.SilkS)."""
+        self.keepout[side].append((min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)))
 
 
 def add_silk_text(
@@ -780,7 +817,7 @@ def place_val_only(
 
     label = (
         compact_passive_value(val_clean)
-        if compact and is_passive_ref(fp.GetReference())
+        if compact and is_passive_footprint(fp)
         else val_clean
     )
     if not label:
@@ -862,6 +899,9 @@ def place_ref_val_pair(
 ) -> tuple[float, float, float] | None:
     """Place local Reference + Value (or value-only for passives on dense boards) on SilkS.
 
+    `val_only` controls value-only placement: `"auto"` (default, value-only for
+    fixed passives on dense sides), `"all"` (value-only for all footprints with
+    non-empty `val_text`), `True` (always value-only), or `False` (always REF+VAL).
     Keeps fp.Value() hidden on .Fab, accounts for B.SilkS mirroring so <REF> <VAL>
     always reads left-to-right, and strictly enforces local tether bounds without
     board-wide drift. Returns (cx, cy, deg) on success, or None if no local slot fits.
@@ -878,7 +918,7 @@ def place_ref_val_pair(
         fp.Reference().SetVisible(False)
         return (cx, cy, 0.0)
 
-    is_passive = is_passive_ref(ref_str)
+    is_passive = is_passive_footprint(fp)
     val_clean = val_text.strip()
     base_limit = (
         max_edge_distance
@@ -887,8 +927,15 @@ def place_ref_val_pair(
     )
     limit = min(base_limit, max_radius) if max_edge_distance is None else base_limit
 
-    if val_only is True or (
-        val_only == "auto" and is_passive and bool(val_clean) and grid.is_dense(side)
+    if (
+        val_only is True
+        or (val_only == "all" and bool(val_clean))
+        or (
+            val_only == "auto"
+            and is_passive
+            and bool(val_clean)
+            and grid.is_dense(side)
+        )
     ):
         return place_val_only(
             grid,
@@ -1372,6 +1419,7 @@ def inspect_board_silk(
     labeled = 0
     unlabeled = 0
     val_only_passives = 0
+    val_only_other = 0
     tether_violations = 0
     split_pair_violations = 0
 
@@ -1439,14 +1487,16 @@ def inspect_board_silk(
             refs_visible += 1
         if has_ref or user_texts:
             labeled += 1
-            if is_passive_ref(ref) and not has_ref and user_texts:
-                val_only_passives += 1
+            if not has_ref and user_texts:
+                if is_passive_footprint(fp):
+                    val_only_passives += 1
+                else:
+                    val_only_other += 1
         else:
             unlabeled += 1
             pos = fp.GetPosition()
             print(
-                f"  UNLABELED: {ref} at "
-                f"({pcbnew.ToMM(pos.x):.2f}, {pcbnew.ToMM(pos.y):.2f})"
+                f"  UNLABELED: {ref} at ({pcbnew.ToMM(pos.x):.2f}, {pcbnew.ToMM(pos.y):.2f})"
             )
 
         for lbl, tside, tbox in fp_texts:
@@ -1594,9 +1644,12 @@ def inspect_board_silk(
 
     print(f"Silkscreen Inspection: {pcb_path.name}")
     print(f"  Footprints:         {len(footprints)} ({len(non_fid)} non-fiducial)")
+    val_only_other_suffix = (
+        f", {val_only_other} value-only other" if val_only_other else ""
+    )
     print(
         f"  Labeled on SilkS:   {labeled}/{len(non_fid)} "
-        f"({refs_visible} with REF, {val_only_passives} value-only passives)"
+        f"({refs_visible} with REF, {val_only_passives} value-only passives{val_only_other_suffix})"
     )
     print(f"  Unlabeled parts:    {unlabeled}")
     print(f"  Raw Values on Silk: {vals_on_silk}")

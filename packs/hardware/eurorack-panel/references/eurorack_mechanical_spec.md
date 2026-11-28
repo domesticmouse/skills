@@ -37,9 +37,10 @@ Most vertical PCB-mounted panel components establish a **`~10.0 mm – 11.0 mm`*
 | Component Type | Common Part / MPN | KiCad Footprint | Footprint Origin `(0, 0)` | Shaft / Bushing Offset `(dx, dy)` at `rot=0` | Panel Hole Drill ($\text{mm}$) | Nut / Bezel Keepout OD ($\text{mm}$) | Board-to-Panel Standoff ($\text{mm}$) |
 | :--- | :--- | :--- | :--- | :---: | :---: | :---: | :---: |
 | **3.5mm Mono Jack (Thonkiconn)** | QingPu `WQP-PJ398SM` / `PJ301M-12` | `Connector_Audio:Jack_3.5mm_QingPu_WQP-PJ398SM_Vertical_CircularHoles` | Pad `S` (Sleeve) | **`(0.00, +6.48)`** | **`6.2` – `6.3`** (M6×0.5 bushing) | **`9.5`** (Knurled / Hex nut) | `10.5` |
-| **9mm Vertical Potentiometer** | Alpha `RV09AF-40` / Alps `RK09K` | `Potentiometer_THT:Potentiometer_Alps_RK09K_Single_Vertical` | Pad `1` | **`(+2.50, -7.00)`** *(check `fp_circle`)* | **`7.2` – `7.5`** (M7×0.75) or **`6.3`** (D-shaft) | **`10.5` – `11.0`** (M7 nut + washer) | `10.0` – `10.5` |
+| **9mm Vertical Potentiometer** | Alpha `RV09AF-40` / Alps `RK09K` | `Potentiometer_THT:Potentiometer_Alps_RK09K_Single_Vertical` | Pad `1` | **`(+7.50, +2.50)`** (`(+2.50, -7.50)` at `90°`, check `fp_circle`) | **`7.2` – `7.5`** (M7×0.75) or **`6.3`** (D-shaft) | **`10.5` – `11.0`** (M7 nut + washer) | `10.0` – `10.5` |
 | **Sub-Mini Toggle Switch (`10-48`)** | Dailywell `2MS1T1B1M2QES` (`Tayda A-6087`) | `Eurorack_Custom:SW_Toggle_SPDT_Dailywell_2MS1` | Center (`Pin 2`) | **`(0.00, 0.00)`** | **`5.2`** (`4.95–5.2` hole, `7.2` back GND pad) | **`8.2`** (`7.0 mm` hex flats) | `10.5` |
 | **Miniature Toggle Switch (`1/4-40`)** | Taiway `100-SP1-T1` / C&K `JS202011JCQN` | `Button_Switch_THT:SW_CuK_JS202011JCQN_DPDT_Straight` | Center / Pin `1` | Inspect `F.Fab` center | **`6.2`** (`8.2` back GND pad) | **`9.0`** (`8.0 mm` hex flats) | `10.5` |
+| **12mm Tactile Push-Button** | Standard `12×12 mm` / `TL1100` | `Button_Switch_THT:SW_PUSH-12mm` | Pin `1` | **`(+6.25, +2.50)`** | **`12.5`** (cap cutout NPTH) | **`13.5`** | — |
 | **3mm THT LED** | Standard 3mm LED | `LED_THT:LED_D3.0mm` | Pad `1` (Cathode) | **`(+1.27, 0.00)`** | **`3.2`** | `4.0` (flange) | Bend/spacer to `10.5` |
 | **5mm THT LED** | Standard 5mm LED | `LED_THT:LED_D5.0mm` | Pad `1` (Cathode) | **`(+1.27, 0.00)`** | **`5.2`** | `6.0` (flange) | Bend/spacer to `10.5` |
 

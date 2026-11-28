@@ -19,12 +19,12 @@ Use this workflow when turning a KiCad `.net` netlist into a fully placed, route
    On macOS, `pcbnew` is bundled inside KiCad (`KiCad.app`) rather than system or virtualenv Python. Re-exec the generator script automatically when `import pcbnew` raises `ModuleNotFoundError`. See [kicad10_pcbnew_api.md](./references/kicad10_pcbnew_api.md).
 
 2. **Parse the `.net` netlist dynamically**:
-   Extract every component's `ref`, `value`, `footprint` (`lib:fp_name`), `tstamp`, custom fields (`LCSC`, `MPN`, `Manufacturer`, `Silkscreen`, `Notes`), `dnp` status, and all net connections (`(ref, pin)` nodes). Never hardcode net codes or component metadata that already exists in `.net`—consume each footprint's `Silkscreen` field directly (via `get_footprint_field(fp, "Silkscreen")` or `get_fp_silkscreen_field(fp)`) instead of maintaining duplicate label dicts that drift from the netlist.
+   Extract every component's `ref`, `value`, `footprint` (`lib:fp_name`), `tstamp`, custom fields (`LCSC`, `MPN`, `Manufacturer`, `Silkscreen`, `Notes`, `JLCPCB_Class`), `dnp` status (`Notes` containing `DNP`, `dnp_prefixes`, or `JLCPCB_Class == "DNP"`), manual THT CPL exclusion (`JLCPCB_Class == "Manual THT"` sets `exclude_from_pos_files=True` while keeping BOM inclusion), and all net connections (`(ref, pin)` nodes). Never hardcode net codes or component metadata that already exists in `.net`—consume each footprint's `Silkscreen` field directly (via `get_footprint_field(fp, "Silkscreen")` or `get_fp_silkscreen_field(fp)`) instead of maintaining duplicate label dicts that drift from the netlist.
    - Reusable implementation & `--netlist` summary CLI: [pcbnew_layout_template.py](./scripts/pcbnew_layout_template.py).
 
 3. **Initialize the board safely & assign footprints**:
    - Write a minimal KiCad PCB shell and open it with `pcbnew.LoadBoard()` instead of calling `fp.Flip()` directly on an uninitialized `pcbnew.BOARD()`.
-   - `board.Add(fp)` **before** calling `fp.Flip(pos, False)` or setting rotation (`Flip` must precede `SetOrientationDegrees`).
+   - `board.Add(fp)` **before** calling `fp.Flip(pos, False)` or setting rotation (`Flip` must precede `SetOrientationDegrees`). Pass `show_ref=False` to `populate_footprints()` when suppressing default `fp.Reference()` silkscreen ahead of a value-only silkscreen pass.
    - Do **not** overwrite loaded footprints with `fp.SetFPID(pcbnew.LIB_ID(lib, fp_name))` when running in headless/sandboxed environments where global `fp-lib-table` cannot be opened, or `kicad-cli pcb drc` will emit `lib_footprint_issues` warnings for every footprint.
    - Mark optional / unpopulated parts (e.g., `TP1`–`TP8`, `dnp=True`, or by passing `dnp_prefixes=("TP",)` to `parse_netlist()`) and optical fiducials (`FID*`, via `populate_footprints()` / `add_fiducials()`, which also sets `fp.SetBoardOnly(True)`) with **all three** flags: `fp.SetDNP(True)`, `fp.SetExcludedFromBOM(True)`, and `fp.SetExcludedFromPosFiles(True)` so neither `TP*` nor `FID*` leak into JLCPCB CPL exports (`--smd-only --exclude-dnp`).
 
@@ -32,9 +32,10 @@ Use this workflow when turning a KiCad `.net` netlist into a fully placed, route
    Place panel-mounted controls on `F.Cu` aligned to panel bushing coordinates (applying footprint-origin-to-bushing mechanical offsets), and place headers, test points, and SMDs on `B.Cu`. Leave `>= 1.5–2.0 mm` silkscreen label corridors between SMD passive rows and adjacent IC/THT keepouts so local labels stay within `3.5 mm` tether bounds. See [routing_and_dfm_patterns.md](./references/routing_and_dfm_patterns.md).
 
 5. **Route with DFM-safe rules and pour `GND` zones**:
-   - Pre-place immediate `GND` stitching vias for every `B.Cu` SMD `GND` pad before signal routing so signal traces never box in ground pads.
-   - Reserve outward IC escape stubs just beyond actual outer pad edges (`x0 - 0.05` / `x1 + 0.05`) and pre-route decoupling cap power connections before general routing.
-   - Block via centers inside exact SMD pad extents (`[x0 - 0.02, x1 + 0.02] x [y0 - 0.02, y1 + 0.02]`, avoiding `0` `VP-001` via-in-pad warnings).
+   - Call `route_and_pour_board()` (or use `GridRouter` + `pour_gnd_zones()` directly) to handle IC decoupling/escapes, immediate `B.Cu` SMD `GND` vias, automatic retry promotion of blocked nets, `9 mm` board-wide `GND` stitching vias, and `F.Cu`/`B.Cu` zone fills (`Edge.Cuts` pullback, `QR_BOX` keepouts).
+   - Pre-place immediate `GND` stitching vias for every `B.Cu` SMD `GND` pad before signal routing so signal traces never box in ground pads, verifying straight stubs with `line_passable()`.
+   - Reserve outward IC escape stubs `0.05–0.55 mm` beyond actual outer pad edges (`x0 - 0.55` / `x1 + 0.55`, never `cx ± 0.55` inside the pad) and pre-route decoupling cap power connections before general routing.
+   - Block via centers inside exact SMD pad extents expanded by via radius (`margin=0.32` -> `0.50 mm` `can_place_via()` check radius), and use exact Euclidean pad-box clearance in `mark_pad_box()` to avoid blocking adjacent `0603` channels (`0` `VP-001` via-in-pad warnings).
    - Allow free `F.Cu <-> B.Cu` layer transitions at current-net THT barrels without emitting a duplicate `PCB_VIA` (`0` `holes_co_located`).
    - Preserve multi-branch T-junction vertices when merging collinear path steps (`0` `track_dangling`).
    - Call `board.BuildConnectivity()` **both before and after** `pcbnew.ZONE_FILLER(board).Fill(board.Zones())` with `ISLAND_REMOVAL_MODE_ALWAYS`.

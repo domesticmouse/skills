@@ -21,7 +21,7 @@ On dense mixed-signal boards with SOIC-14 op-amps (`U1`/`U2`) flanked closely by
 1. **Immediate `B.Cu` SMD `GND` Stitching Vias**:
    Place a nearby `GND` via (`0.60 / 0.30 mm` tented) + short `B.Cu` stub for **every** `B.Cu` SMD `GND` pad before routing any signal nets. Otherwise horizontal signal tracks will trap SMD `GND` pads inside isolated copper pockets.
 2. **Reserve IC Outward Escape Stubs Before General Routing**:
-   - Measure escape offsets from the pad's **actual outer copper edge** (`x0 - 0.05` on left side, `x1 + 0.05` on right side), **not** `cx ± 0.55`. SOIC-14 pads are `1.95 mm` wide (`half-width = 0.975 mm`), so `cx ± 0.55` stays inside the pad and invites via-in-pad failures.
+   - Measure escape offsets `0.05–0.55 mm` past the pad's **actual outer copper edge** (`x0 - 0.55` on left side, `x1 + 0.55` on right side in `route_and_pour_board()`), **not** `cx ± 0.55`. SOIC-14 pads are `1.95 mm` wide (`half-width = 0.975 mm`), so `cx ± 0.55` stays inside the pad and invites via-in-pad failures.
 3. **Pre-Route Decoupling Caps**:
    Connect `U1.4 <-> C5`, `U1.11 <-> C6`, `U2.4 <-> C7`, and `U2.11 <-> C8` directly on `B.Cu` at power trace width (`0.30 mm`) and merge those pairs into connected clusters before A* runs.
 4. **Prioritize Constricted IC Breakout Nets**:
@@ -37,10 +37,10 @@ On dense mixed-signal boards with SOIC-14 op-amps (`U1`/`U2`) flanked closely by
 
 ## 3. Preventing `VP-001` (Via-in-Pad) & `holes_co_located`
 
-Two grid bugs commonly appear when writing an A* PCB router:
+Two grid bugs commonly appear when writing an A* PCB router (both fixed in `GridRouter` and `route_and_pour_board()` in `pcbnew_layout_template.py`):
 
-- **Via-in-Pad (`VP-001`)**: Allowing `can_place_via()` whenever `pad_net[L][idx] == net_code` causes the router to drop vias inside same-net SMD pads.
-  - **Fix**: Populate an explicit `smd_via_block` map using exact grid-point testing (`x0 - 0.02 <= px <= x1 + 0.02` and `y0 - 0.02 <= py <= y1 + 0.02` — avoid coarse `floor`/`ceil` rounding over `pad_net`, which can block every grid column in a `1.3 mm` SOIC-to-`0603` channel). Always reject vias when `smd_via_block[idx]` is set, even if `vstate in targets`.
+- **Via-in-Pad (`VP-001`)**: Allowing `can_place_via()` whenever `pad_net[L][idx] == net_code` causes the router to drop vias inside same-net SMD pads, and coarse rectangular `mark_pad_box()` corners can block adjacent `1.3 mm` SOIC-to-`0603` channels.
+  - **Fix**: Populate `smd_via_block` using exact grid-point testing expanded by via radius (`margin = 0.32 mm`, i.e., `x0 - 0.32 <= px <= x1 + 0.32` and `y0 - 0.32 <= py <= y1 + 0.32`), verify a `0.50 mm` circular neighborhood in `can_place_via()`, check pad clearance in `mark_pad_box()` with exact Euclidean distance (`dx^2 + dy^2 <= margin^2`), and validate pre-routed `GND` via stubs with `line_passable()`. Always reject vias when `smd_via_block[idx]` is set, even if `vstate in targets`.
 - **Co-Located Drill Holes (`holes_co_located`)**: Letting A* transition `F.Cu <-> B.Cu` at a THT pad anchor and emitting `add_via()` drops a `0.30 mm` via drill directly inside the THT plated hole.
   - **Fix**: Record all THT pad grid anchors in `tht_pad_grid[(gx, gy)] = net_code`. Inside A*, allow `0`-cost layer transitions at `tht_pad_grid` cells matching the current net without checking `can_place_via()`, and skip `add_via()` during track emission when `tht_pad_grid.get((gx, gy)) == net_code`. Also block `via_block` around all THT drills (including unconnected pot mounting lugs).
 

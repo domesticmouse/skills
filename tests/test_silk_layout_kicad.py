@@ -218,3 +218,96 @@ class SilkLayoutKicadTests(unittest.TestCase):
                 ["--pcb", str(pcb_path), "--apply", "--layout", str(layout_path)]
             )
             self.assertEqual(rc, 1)
+
+    def test_silk_grid_preserves_board_fiducials_with_subset_footprints(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            pcb_path = pathlib.Path(td) / "fids.kicad_pcb"
+            pcb_path.write_text(BASE_BOARD_PCB, encoding="utf-8")
+            board = pcbnew.LoadBoard(str(pcb_path))
+            self._add_test_resistor(board, "R1", 110.0, 55.0)
+            fid = pcbnew.FOOTPRINT(board)
+            board.Add(fid)
+            fid.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(120.0), pcbnew.FromMM(60.0)))
+            fid.SetReference("FID1")
+            r1 = next(fp for fp in board.GetFootprints() if fp.GetReference() == "R1")
+
+            grid = self.sa.SilkGrid(board, footprints={"R1": r1})
+            self.assertFalse(grid.box_ok(0, 119.5, 59.5, 120.5, 60.5))
+
+    def test_is_passive_footprint_and_reserve_keepout_and_val_only_all(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            pcb_path = pathlib.Path(td) / "labels.kicad_pcb"
+            pcb_path.write_text(BASE_BOARD_PCB, encoding="utf-8")
+            board = pcbnew.LoadBoard(str(pcb_path))
+            self._add_test_resistor(board, "R1", 110.0, 55.0)
+
+            pot = pcbnew.FOOTPRINT(board)
+            board.Add(pot)
+            pot.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(120.0), pcbnew.FromMM(55.0)))
+            pot.SetReference("R2")
+            pot.SetFPID(
+                pcbnew.LIB_ID(
+                    "Potentiometer_THT", "Potentiometer_Alps_RK09K_Single_Vertical"
+                )
+            )
+
+            u1 = pcbnew.FOOTPRINT(board)
+            board.Add(u1)
+            u1.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(125.0), pcbnew.FromMM(65.0)))
+            u1.SetReference("U1")
+            u1.SetValue("TL074")
+
+            r1 = next(fp for fp in board.GetFootprints() if fp.GetReference() == "R1")
+            self.assertTrue(self.sa.is_passive_footprint(r1))
+            self.assertFalse(self.sa.is_passive_footprint(pot))
+
+            grid = self.sa.SilkGrid(board)
+            grid.reserve_keepout(0, 110.0, 62.0, 115.0, 65.0)
+            self.assertFalse(grid.box_ok(0, 111.0, 63.0, 114.0, 64.0))
+
+            placed = self.sa.place_ref_val_pair(grid, u1, "TL074", val_only="all")
+            self.assertIsNotNone(placed)
+            self.assertFalse(u1.Reference().IsVisible())
+            user_texts = [
+                gi.GetText()
+                for gi in u1.GraphicalItems()
+                if hasattr(gi, "GetText") and gi.GetLayer() == pcbnew.F_SilkS
+            ]
+            self.assertIn("TL074", user_texts)
+
+    def test_silk_layout_auto_preserves_potentiometer_with_r_prefix(self) -> None:
+        import silk_layout as sl
+
+        with tempfile.TemporaryDirectory() as td:
+            pcb_path = pathlib.Path(td) / "pot_layout.kicad_pcb"
+            pcb_path.write_text(BASE_BOARD_PCB, encoding="utf-8")
+            board = pcbnew.LoadBoard(str(pcb_path))
+
+            pot = pcbnew.FOOTPRINT(board)
+            board.Add(pot)
+            pot.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(115.0), pcbnew.FromMM(60.0)))
+            pot.SetReference("R2")
+            pot.SetValue("TUNE 100k")
+            pot.SetFPID(
+                pcbnew.LIB_ID(
+                    "Potentiometer_THT", "Potentiometer_Alps_RK09K_Single_Vertical"
+                )
+            )
+            board.Save(str(pcb_path))
+
+            layout = {
+                "board_origin_mm": [100.0, 40.0],
+                "footprints": {"R2": "auto"},
+            }
+            pinned, auto_count = sl.apply_silk_layout(board, layout)
+            self.assertEqual(pinned, 0)
+            self.assertEqual(auto_count, 1)
+
+            r2 = next(fp for fp in board.GetFootprints() if fp.GetReference() == "R2")
+            self.assertTrue(r2.Reference().IsVisible())
+            user_texts = [
+                gi.GetText()
+                for gi in r2.GraphicalItems()
+                if hasattr(gi, "GetText") and gi.GetLayer() == pcbnew.F_SilkS
+            ]
+            self.assertIn("TUNE 100k", user_texts)

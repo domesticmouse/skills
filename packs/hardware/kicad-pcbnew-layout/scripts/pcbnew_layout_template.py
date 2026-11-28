@@ -166,10 +166,15 @@ def parse_netlist(
             exclude_from_bom = True
         if _find_child(comp, "exclude_from_pos_files") is not None:
             exclude_from_pos = True
-        if "DNP" in fields.get("Notes", "") or (
-            dnp_prefixes and ref.startswith(dnp_prefixes)
+        jlcpcb_cls = fields.get("JLCPCB_Class", "").strip().lower()
+        if (
+            "DNP" in fields.get("Notes", "")
+            or jlcpcb_cls == "dnp"
+            or (dnp_prefixes and ref.startswith(dnp_prefixes))
         ):
             dnp = True
+        elif jlcpcb_cls == "manual tht":
+            exclude_from_pos = True
 
         components[ref] = {
             "ref": ref,
@@ -366,6 +371,7 @@ def populate_footprints(
     *,
     custom_fp_dirs: Sequence[pathlib.Path] = (),
     sch_uuids: dict[str, str] | None = None,
+    show_ref: bool = True,
 ) -> dict[str, pcbnew.FOOTPRINT]:
     """Load, add, position, flip (for B.Cu), orient, and configure fields on all footprints."""
     if set(placements) != set(components):
@@ -396,7 +402,10 @@ def populate_footprints(
         for fld in fp.GetFields():
             fld.SetVisible(False)
         fp.Value().SetVisible(False)
-        fp.Reference().SetVisible(True)
+        fab_layer = pcbnew.B_Fab if is_back else pcbnew.F_Fab
+        if not show_ref:
+            fp.Reference().SetLayer(fab_layer)
+        fp.Reference().SetVisible(show_ref)
 
         is_fid = ref.strip().upper().startswith("FID")
         if comp["dnp"] or is_fid:
@@ -657,28 +666,53 @@ class GridRouter:
         gy0 = max(0, math.floor((y0 - margin - self.y0) / self.step))
         gy1 = min(self.ny - 1, math.ceil((y1 + margin - self.y0) / self.step))
         arr = self.pad_net[layer]
+        r2 = margin * margin
         for gy in range(gy0, gy1 + 1):
+            py = self.y0 + gy * self.step
+            dy = max(0.0, y0 - py, py - y1)
+            dy2 = dy * dy
             row = gy * self.nx
             for gx in range(gx0, gx1 + 1):
-                cur = arr[row + gx]
-                if cur == -1:
-                    arr[row + gx] = net_code
-                elif cur != net_code:
-                    arr[row + gx] = -2
+                px = self.x0 + gx * self.step
+                dx = max(0.0, x0 - px, px - x1)
+                if dx * dx + dy2 <= r2:
+                    cur = arr[row + gx]
+                    if cur == -1:
+                        arr[row + gx] = net_code
+                    elif cur != net_code:
+                        arr[row + gx] = -2
 
     def mark_smd_via_block(
-        self, x0: float, y0: float, x1: float, y1: float, margin: float = 0.02
+        self, x0: float, y0: float, x1: float, y1: float, margin: float = 0.32
     ) -> None:
         """Block exact grid coordinates inside an SMD pad from receiving vias (prevents VP-001)."""
-        for gy in range(self.ny):
+        gx0 = max(0, math.floor((x0 - margin - self.x0) / self.step))
+        gx1 = min(self.nx - 1, math.ceil((x1 + margin - self.x0) / self.step))
+        gy0 = max(0, math.floor((y0 - margin - self.y0) / self.step))
+        gy1 = min(self.ny - 1, math.ceil((y1 + margin - self.y0) / self.step))
+        for gy in range(gy0, gy1 + 1):
             py = self.y0 + gy * self.step
             if py < y0 - margin or py > y1 + margin:
                 continue
             row = gy * self.nx
-            for gx in range(self.nx):
+            for gx in range(gx0, gx1 + 1):
                 px = self.x0 + gx * self.step
                 if x0 - margin <= px <= x1 + margin:
                     self.smd_via_block[row + gx] = 1
+
+    def mark_via_block_circle(self, cx: float, cy: float, radius: float) -> None:
+        """Block vias inside a circular region around (cx, cy) without blocking traces."""
+        gx0 = max(0, math.floor((cx - radius - self.x0) / self.step))
+        gx1 = min(self.nx - 1, math.ceil((cx + radius - self.x0) / self.step))
+        gy0 = max(0, math.floor((cy - radius - self.y0) / self.step))
+        gy1 = min(self.ny - 1, math.ceil((cy + radius - self.y0) / self.step))
+        r2 = radius * radius
+        for gy in range(gy0, gy1 + 1):
+            dy2 = (self.y0 + gy * self.step - cy) ** 2
+            row = gy * self.nx
+            for gx in range(gx0, gx1 + 1):
+                if (self.x0 + gx * self.step - cx) ** 2 + dy2 <= r2:
+                    self.via_block[row + gx] = 1
 
     def mark_via_obstacle(
         self, cx: float, cy: float, radius: float, net_code: int
@@ -756,8 +790,15 @@ class GridRouter:
         idx = gy * self.nx + gx
         if self.via_block[idx] or self.smd_via_block[idx]:
             return False
-        for dy in (-1, 0, 1):
-            for dx in (-1, 0, 1):
+        r_mm = 0.50
+        r_cells = max(1, math.ceil(r_mm / self.step))
+        r2_mm = r_mm * r_mm + 1e-9
+        for dy in range(-r_cells, r_cells + 1):
+            dy_mm = dy * self.step
+            for dx in range(-r_cells, r_cells + 1):
+                dx_mm = dx * self.step
+                if dx_mm * dx_mm + dy_mm * dy_mm > r2_mm:
+                    continue
                 nx_i, ny_i = gx + dx, gy + dy
                 if nx_i < 0 or nx_i >= self.nx or ny_i < 0 or ny_i >= self.ny:
                     return False
@@ -771,6 +812,21 @@ class GridRouter:
                     pnet = self.pad_net[layer][nidx]
                     if pnet != -1 and pnet != net_code:
                         return False
+        return True
+
+    def line_passable(
+        self, layer: int, gx0: int, gy0: int, gx1: int, gy1: int, net_code: int
+    ) -> bool:
+        """Check whether every grid cell along a straight line is passable."""
+        steps = max(abs(gx1 - gx0), abs(gy1 - gy0))
+        if steps == 0:
+            return self.is_passable(layer, gx0, gy0, net_code)
+        for step_i in range(1, steps + 1):
+            t = step_i / steps
+            ix = round(gx0 + (gx1 - gx0) * t)
+            iy = round(gy0 + (gy1 - gy0) * t)
+            if not self.is_passable(layer, ix, iy, net_code):
+                return False
         return True
 
     def route(
@@ -977,6 +1033,481 @@ def pour_gnd_zones(
     filler = pcbnew.ZONE_FILLER(board)
     filler.Fill(board.Zones())
     board.BuildConnectivity()
+
+
+def _attempt_route(
+    board: pcbnew.BOARD,
+    footprints: dict[str, pcbnew.FOOTPRINT],
+    net_items: dict[str, pcbnew.NETINFO_ITEM],
+    x0: float,
+    y0: float,
+    x1: float,
+    y1: float,
+    *,
+    qr_rects: Sequence[tuple[int, float, float, float, float]],
+    power_nets: tuple[str, ...],
+    power_width: float,
+    signal_width: float,
+    edge_clearance: float,
+    clearance: float,
+    promoted_nets: list[str],
+) -> tuple[GridRouter, str | None, str]:
+    """Run one full routing attempt; return (router, failed_net_name, error_msg)."""
+    router = GridRouter(
+        x0,
+        y0,
+        x1,
+        y1,
+        step=0.25,
+        edge_clearance=edge_clearance,
+        track_width=signal_width,
+        clearance=clearance,
+    )
+
+    for layer_id, cx, cy, radius in extract_keepout_circles(footprints):
+        router.mark_static_circle(layer_id, cx, cy, radius + 0.25, block_via=True)
+
+    for layer_id, qx0, qy0, qx1, qy1 in qr_rects:
+        router.mark_static_rect(
+            layer_id, qx0, qy0, qx1, qy1, margin=0.50, block_via=True
+        )
+
+    net_pads: dict[str, list[tuple[str, str, float, float, set[int]]]] = {}
+    gnd_smd_pads: list[tuple[int, int, float, float]] = []
+
+    for ref, fp in footprints.items():
+        for pad in fp.Pads():
+            ncode = pad.GetNetCode()
+            nname = pad.GetNetname()
+            cx, cy, px0, py0, px1, py1, layers = extract_pad_geometry(pad)
+            is_tht = (0 in layers) and (1 in layers)
+            margin = (
+                (0.45 if is_tht else 0.325) if nname else (0.45 if is_tht else 0.25)
+            )
+            for layer in layers:
+                router.mark_pad_box(layer, px0, py0, px1, py1, margin, ncode)
+            if is_tht:
+                gx, gy = router.to_grid(cx, cy)
+                router.mark_via_block_circle(
+                    cx, cy, max(px1 - px0, py1 - py0) * 0.5 + 0.50
+                )
+                if ncode > 0:
+                    router.tht_pad_grid[(gx, gy)] = ncode
+                else:
+                    router.mark_static_circle(
+                        0, cx, cy, max(px1 - px0, py1 - py0) * 0.5 + 0.3, block_via=True
+                    )
+                    router.mark_static_circle(
+                        1, cx, cy, max(px1 - px0, py1 - py0) * 0.5 + 0.3, block_via=True
+                    )
+            else:
+                router.mark_smd_via_block(px0, py0, px1, py1, margin=0.32)
+                if nname == "GND" and len(layers) == 1:
+                    gnd_smd_pads.append((ncode, next(iter(layers)), cx, cy))
+
+            if nname and nname != "GND":
+                net_pads.setdefault(nname, []).append(
+                    (ref, pad.GetNumber(), cx, cy, layers)
+                )
+
+    # Reserve outward escape stubs for dense multi-pin SMD ICs (>= 8 pads)
+    # and pre-route adjacent SMD decoupling caps to matching IC power pins.
+    ic_pads: list[tuple[str, pcbnew.PAD, float, float, float, float, float, float]] = []
+    decoupling_caps = [
+        (ref, fp)
+        for ref, fp in footprints.items()
+        if ref.startswith("C")
+        and len(list(fp.Pads())) == 2
+        and all(len(extract_pad_geometry(p)[6]) == 1 for p in fp.Pads())
+    ]
+
+    for ref, fp in footprints.items():
+        pads_list = list(fp.Pads())
+        if len(pads_list) < 8:
+            continue
+        if any(
+            (0 in extract_pad_geometry(p)[6]) and (1 in extract_pad_geometry(p)[6])
+            for p in pads_list
+        ):
+            continue
+        ic_cx = sum(pcbnew.ToMM(p.GetPosition().x) for p in pads_list) / len(pads_list)
+        ic_cy = sum(pcbnew.ToMM(p.GetPosition().y) for p in pads_list) / len(pads_list)
+        for pad in pads_list:
+            nname = pad.GetNetname()
+            ncode = pad.GetNetCode()
+            if not nname or nname == "GND":
+                continue
+            cx, cy, px0, py0, px1, py1, layers = extract_pad_geometry(pad)
+            if len(layers) != 1:
+                continue
+            ic_layer = next(iter(layers))
+            ic_cu = pcbnew.B_Cu if ic_layer == 1 else pcbnew.F_Cu
+            ic_pads.append((ref, pad, cx, cy, px0, py0, px1, py1))
+            gx, gy = router.to_grid(cx, cy)
+            if nname in power_nets:
+                best_cap_pad = None
+                best_dist = 4.5
+                for _, cap_fp in decoupling_caps:
+                    for cpad in cap_fp.Pads():
+                        if cpad.GetNetname() == nname:
+                            ccx, ccy, _, _, _, _, clayers = extract_pad_geometry(cpad)
+                            if ic_layer not in clayers:
+                                continue
+                            d = math.hypot(ccx - cx, ccy - cy)
+                            if d < best_dist:
+                                cgx, cgy = router.to_grid(ccx, ccy)
+                                if router.line_passable(
+                                    ic_layer, gx, gy, cgx, cgy, ncode
+                                ):
+                                    best_dist = d
+                                    best_cap_pad = (ccx, ccy)
+                if best_cap_pad is not None:
+                    ccx, ccy = best_cap_pad
+                    add_track(
+                        board,
+                        ic_cu,
+                        cx,
+                        cy,
+                        ccx,
+                        ccy,
+                        power_width,
+                        net_items[nname],
+                    )
+                    router.mark_segment(ic_layer, cx, cy, ccx, ccy, power_width, ncode)
+                    if nname in net_pads:
+                        net_pads[nname] = [
+                            item
+                            for item in net_pads[nname]
+                            if not (item[0] == ref and item[1] == pad.GetNumber())
+                        ]
+                    continue
+
+            if len(net_pads.get(nname, [])) < 2:
+                continue
+
+            dx_c = cx - ic_cx
+            dy_c = cy - ic_cy
+            if abs(dy_c) >= abs(dx_c):
+                ey = (py0 - 0.55) if dy_c < 0 else (py1 + 0.55)
+                ex = cx
+            else:
+                ex = (px0 - 0.55) if dx_c < 0 else (px1 + 0.55)
+                ey = cy
+            egx, egy = router.to_grid(ex, ey)
+            sx, sy = router.to_mm(egx, egy)
+            if (gx, gy) != (egx, egy) and router.line_passable(
+                ic_layer, gx, gy, egx, egy, ncode
+            ):
+                w_stub = power_width if nname in power_nets else signal_width
+                add_track(board, ic_cu, cx, cy, sx, sy, w_stub, net_items[nname])
+                router.mark_segment(ic_layer, cx, cy, sx, sy, w_stub, ncode)
+                net_pads[nname] = [
+                    (ref, pad.GetNumber(), sx, sy, {ic_layer})
+                    if (item[0] == ref and item[1] == pad.GetNumber())
+                    else item
+                    for item in net_pads[nname]
+                ]
+
+    # Immediate SMD GND stitching vias before signal tracks box them in.
+    gnd_net = net_items.get("GND")
+    if gnd_net is not None:
+        gnd_code = gnd_net.GetNetCode()
+        for _, gnd_layer, px, py in gnd_smd_pads:
+            gnd_cu = pcbnew.B_Cu if gnd_layer == 1 else pcbnew.F_Cu
+            pgx, pgy = router.to_grid(px, py)
+            placed = False
+            for r in range(3, 12):
+                for dx, dy in (
+                    (0, r),
+                    (0, -r),
+                    (r, 0),
+                    (-r, 0),
+                    (r, r),
+                    (-r, r),
+                    (r, -r),
+                    (-r, -r),
+                ):
+                    vgx, vgy = pgx + dx, pgy + dy
+                    if (
+                        2 <= vgx < router.nx - 2
+                        and 2 <= vgy < router.ny - 2
+                        and router.can_place_via(vgx, vgy, gnd_code)
+                        and router.line_passable(
+                            gnd_layer, pgx, pgy, vgx, vgy, gnd_code
+                        )
+                    ):
+                        vx, vy = router.to_mm(vgx, vgy)
+                        add_via(board, vx, vy, gnd_net)
+                        add_track(board, gnd_cu, px, py, vx, vy, signal_width, gnd_net)
+                        router.mark_via_obstacle(vx, vy, 0.72, gnd_code)
+                        router.mark_segment(
+                            gnd_layer, px, py, vx, vy, signal_width, gnd_code
+                        )
+                        placed = True
+                        break
+                if placed:
+                    break
+
+    ic_nets = {
+        pad.GetNetname() for _, pad, *_ in ic_pads if pad.GetNetname() not in power_nets
+    }
+    ic_cap_dist: dict[str, float] = {}
+    for _, pad, cx, cy, *_ in ic_pads:
+        nname = pad.GetNetname()
+        if nname not in ic_nets:
+            continue
+        best_d = ic_cap_dist.get(nname, 1e9)
+        for _, cap_fp in decoupling_caps:
+            for cpad in cap_fp.Pads():
+                d = math.hypot(
+                    pcbnew.ToMM(cpad.GetPosition().x) - cx,
+                    pcbnew.ToMM(cpad.GetPosition().y) - cy,
+                )
+                best_d = min(best_d, d)
+        ic_cap_dist[nname] = best_d
+
+    promoted_rank = {name: idx for idx, name in enumerate(promoted_nets)}
+
+    def _net_sort_key(name: str) -> tuple[int, float, str]:
+        pts = net_pads[name]
+        xs = [p[2] for p in pts]
+        ys = [p[3] for p in pts]
+        span = (max(xs) - min(xs)) + (max(ys) - min(ys))
+        if name in promoted_rank:
+            return (-3, float(promoted_rank[name]), name)
+        if name in ic_nets and span <= 65.0:
+            cap_d = round(ic_cap_dist.get(name, 99.0), 1)
+            return (-1, cap_d * 100.0 + span, name)
+        if name in power_nets:
+            return (0, span, name)
+        return (1, span, name)
+
+    for net_name in sorted(net_pads, key=_net_sort_key):
+        pads = net_pads[net_name]
+        if len(pads) < 2:
+            continue
+        net_item = net_items[net_name]
+        ncode = net_item.GetNetCode()
+        width = power_width if net_name in power_nets else signal_width
+
+        anchors: list[tuple[float, float, set[int], tuple[int, int]]] = []
+        for _, _, cx, cy, layers in pads:
+            gx, gy = router.to_grid(cx, cy)
+            anchors.append((cx, cy, layers, (gx, gy)))
+
+        n_pts = len(anchors)
+        parent_uf = list(range(n_pts))
+
+        def _uf_find(idx: int, parent_uf: list[int] = parent_uf) -> int:
+            while parent_uf[idx] != idx:
+                parent_uf[idx] = parent_uf[parent_uf[idx]]
+                idx = parent_uf[idx]
+            return idx
+
+        def _uf_union(a: int, b: int, parent_uf: list[int] = parent_uf) -> None:
+            ra, rb = _uf_find(a, parent_uf), _uf_find(b, parent_uf)
+            if ra != rb:
+                parent_uf[rb] = ra
+
+        grid_to_idx: dict[tuple[int, int], list[int]] = {}
+        for idx_a, (_, _, _, gp) in enumerate(anchors):
+            grid_to_idx.setdefault(gp, []).append(idx_a)
+        for idxs in grid_to_idx.values():
+            for i_pos, ia in enumerate(idxs):
+                for ib in idxs[i_pos + 1 :]:
+                    if anchors[ia][2] & anchors[ib][2]:
+                        _uf_union(ia, ib)
+
+        edges: list[tuple[int, int]] = []
+        while len({_uf_find(i) for i in range(n_pts)}) > 1:
+            best_d = 1e18
+            best_pair = (0, 1)
+            for u in range(n_pts):
+                ru = _uf_find(u)
+                for v in range(u + 1, n_pts):
+                    if _uf_find(v) == ru:
+                        continue
+                    d = math.hypot(
+                        anchors[u][0] - anchors[v][0], anchors[u][1] - anchors[v][1]
+                    )
+                    if d < best_d:
+                        best_d = d
+                        best_pair = (u, v)
+            _uf_union(best_pair[0], best_pair[1])
+            edges.append(best_pair)
+
+        all_paths: list[list[tuple[int, int, int]]] = []
+        junctions: set[tuple[int, int, int]] = set()
+        anchor_used_layers: dict[int, set[int]] = {}
+
+        for u, v in edges:
+            _, _, ulayers, (ugx, ugy) = anchors[u]
+            _, _, vlayers, (vgx, vgy) = anchors[v]
+            starts = [(ly, ugx, ugy) for ly in sorted(ulayers)]
+            targets = {(ly, vgx, vgy) for ly in sorted(vlayers)}
+            shared_states = [s for s in starts if s in targets]
+            if shared_states:
+                shared_layer = shared_states[0][0]
+                anchor_used_layers.setdefault(u, set()).add(shared_layer)
+                anchor_used_layers.setdefault(v, set()).add(shared_layer)
+                continue
+
+            dist_uv = math.hypot(
+                anchors[u][0] - anchors[v][0], anchors[u][1] - anchors[v][1]
+            )
+            if (net_name in power_nets and dist_uv > 10.0) or (
+                net_name in ic_nets and dist_uv > 12.0
+            ):
+                pref = 0
+            elif (1 in ulayers and 1 in vlayers) and dist_uv <= 15.0:
+                pref = 1
+            else:
+                pref = None
+            path = router.route(starts, targets, ncode, preferred_layer=pref)
+            if path is None:
+                path = router.route(starts, targets, ncode, preferred_layer=None)
+            if path is None:
+                return (
+                    router,
+                    net_name,
+                    f"Failed to route net {net_name}: {anchors[u]} -> {anchors[v]}",
+                )
+
+            anchor_used_layers.setdefault(u, set()).add(path[0][0])
+            anchor_used_layers.setdefault(v, set()).add(path[-1][0])
+            junctions.add(path[0])
+            junctions.add(path[-1])
+            all_paths.append(path)
+
+            for idx_p in range(len(path) - 1):
+                l1, gx1, gy1 = path[idx_p]
+                l2, gx2, gy2 = path[idx_p + 1]
+                ax, ay = router.to_mm(gx1, gy1)
+                bx, by = router.to_mm(gx2, gy2)
+                if l1 != l2:
+                    if router.tht_pad_grid.get((gx1, gy1)) != ncode:
+                        router.mark_via_obstacle(ax, ay, 0.72, ncode)
+                else:
+                    router.mark_segment(l1, ax, ay, bx, by, width, ncode)
+
+        for idx_a, (cx, cy, layers, gp) in enumerate(anchors):
+            used_ly = anchor_used_layers.get(idx_a)
+            if used_ly is None:
+                partner_layers: set[int] = set()
+                for co_i in grid_to_idx.get(gp, ()):
+                    if co_i != idx_a and co_i in anchor_used_layers:
+                        partner_layers |= anchor_used_layers[co_i]
+                if not partner_layers:
+                    continue
+                common = layers & partner_layers
+                used_ly = common if common else {min(layers)}
+            sx, sy = router.to_mm(gp[0], gp[1])
+            if math.hypot(cx - sx, cy - sy) > 0.01:
+                for ly in sorted(used_ly & layers):
+                    ly_id = pcbnew.B_Cu if ly == 1 else pcbnew.F_Cu
+                    add_track(board, ly_id, cx, cy, sx, sy, width, net_item)
+
+        emitted_vias: set[tuple[int, int]] = set()
+        for path in all_paths:
+            merged = _merge_collinear_path(path, junctions)
+            for idx_p in range(len(merged) - 1):
+                l1, gx1, gy1 = merged[idx_p]
+                l2, gx2, gy2 = merged[idx_p + 1]
+                ax, ay = router.to_mm(gx1, gy1)
+                bx, by = router.to_mm(gx2, gy2)
+                if l1 != l2:
+                    if (
+                        router.tht_pad_grid.get((gx1, gy1)) != ncode
+                        and (gx1, gy1) not in emitted_vias
+                    ):
+                        add_via(board, ax, ay, net_item)
+                        emitted_vias.add((gx1, gy1))
+                else:
+                    ly_id = pcbnew.F_Cu if l1 == 0 else pcbnew.B_Cu
+                    add_track(board, ly_id, ax, ay, bx, by, width, net_item)
+
+    return router, None, ""
+
+
+def route_and_pour_board(
+    board: pcbnew.BOARD,
+    footprints: dict[str, pcbnew.FOOTPRINT],
+    net_items: dict[str, pcbnew.NETINFO_ITEM],
+    x0: float,
+    y0: float,
+    x1: float,
+    y1: float,
+    *,
+    qr_rects: Sequence[tuple[int, float, float, float, float]] = (),
+    power_nets: tuple[str, ...] = (
+        "+12V",
+        "-12V",
+        "PWR_IN_POS",
+        "PWR_IN_NEG",
+        "PWR_PROT_POS",
+        "PWR_PROT_NEG",
+    ),
+    power_width: float = 0.35,
+    signal_width: float = 0.25,
+    edge_clearance: float = 0.40,
+    clearance: float = 0.20,
+) -> None:
+    """Route all non-GND nets with DFM rules, stitch GND vias, and pour F.Cu/B.Cu GND zones."""
+    promoted_nets: list[str] = []
+    router: GridRouter | None = None
+    last_err = ""
+    failed_net: str | None = None
+    for _ in range(6):
+        for trk in list(board.GetTracks()):
+            board.Delete(trk)
+        router, failed_net, last_err = _attempt_route(
+            board,
+            footprints,
+            net_items,
+            x0,
+            y0,
+            x1,
+            y1,
+            qr_rects=qr_rects,
+            power_nets=power_nets,
+            power_width=power_width,
+            signal_width=signal_width,
+            edge_clearance=edge_clearance,
+            clearance=clearance,
+            promoted_nets=promoted_nets,
+        )
+        if failed_net is None:
+            break
+        if failed_net not in promoted_nets:
+            promoted_nets.append(failed_net)
+        else:
+            break
+
+    if failed_net is not None or router is None:
+        raise RuntimeError(last_err)
+
+    # Board-wide GND stitching vias on a 9 mm grid (skipping keepouts/pads/tracks).
+    gnd_net = net_items.get("GND")
+    if gnd_net is not None:
+        gnd_code = gnd_net.GetNetCode()
+        gx_step = round(9.0 / router.step)
+        for gy in range(8, router.ny - 8, gx_step):
+            for gx in range(8, router.nx - 8, gx_step):
+                if router.can_place_via(gx, gy, gnd_code):
+                    vx, vy = router.to_mm(gx, gy)
+                    add_via(board, vx, vy, gnd_net)
+                    router.mark_via_obstacle(vx, vy, 0.70, gnd_code)
+
+        pour_gnd_zones(
+            board,
+            gnd_net,
+            x0,
+            y0,
+            x1,
+            y1,
+            edge_clearance=edge_clearance,
+            clearance=clearance,
+        )
 
 
 def main() -> None:
