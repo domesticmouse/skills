@@ -107,7 +107,7 @@ What `verify_schematic.py` checks:
 
 ## 3. Alternative: Direct S-Expression Schematic Generator
 
-When a publication-grade, deterministic single-sheet (e.g., A3 landscape) schematic exceeds `schematizer`'s auto-router, drive the `.kicad_sch` S-expression directly from your SKiDL circuit (`build_circuit()`) so every value, footprint, custom field, and net connection retains a single source of truth:
+When a publication-grade, deterministic single-sheet (e.g., A3 landscape) schematic exceeds `schematizer`'s auto-router, use [`kicad-schematic-layout`](../../kicad-schematic-layout/SKILL.md) (`sch_builder.py` + `inspect_schematic_inputs.py`) to drive the `.kicad_sch` S-expression directly from your SKiDL circuit (`build_circuit()`) so every value, footprint, custom field, and net connection retains a single source of truth:
 
 - Parse KiCad 10 `.kicad_sym` files (`KICAD10_SYMBOL_DIR`), recursively flatten `(extends ...)` symbol inheritance, and embed flattened `(lib_symbols ...)` definitions so `kicad-cli` renders cleanly without global library lookup issues.
 - Emit explicit wire coordinates, `global_label` / `power` symbols, `PWR_FLAG`s, and deterministic UUIDs, then verify `0` ERC errors and `100%` netlist pin-group parity with `verify_schematic.py`.
